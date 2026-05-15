@@ -80,6 +80,16 @@ class InputHandler(QObject):
         mod    = event.modifiers()
         barrel = bool(event.buttons() & self._TABLET_BARREL)
 
+        # Nav release — MUST be checked before the barrel block.
+        # At TabletRelease time, event.buttons() has already cleared the barrel bit,
+        # so 'barrel' is False here.  If we only checked inside 'if barrel:', nav would
+        # never end and the viewport would stay stuck in rotation/pan mode.
+        if self._nav_active and etype == QEvent.TabletRelease:
+            self._nav_active = False
+            self.nav_ended.emit()
+            event.accept()
+            return True
+
         # When the barrel button is configured as a MOUSE button (e.g. XP-Pen → Middle Click),
         # Qt delivers the press as mousePressEvent (not TabletPress), so _nav_active is set
         # by handle_mouse_press(). Subsequent pen movements still arrive as TabletMove events
@@ -94,24 +104,19 @@ class InputHandler(QObject):
             return True
 
         if barrel:
-            if etype == QEvent.TabletRelease:
-                if self._nav_active:
-                    self._nav_active = False
-                    self.nav_ended.emit()
+            # Start nav on TabletPress OR TabletMove with barrel held.
+            # On XP-Pen the barrel button fires as TabletMove (hover), not TabletPress.
+            if not self._nav_active:
+                self._nav_mode   = self._nav_mode_from(mod)
+                self._nav_active = True
+                self._last_pos   = pos
+                self.nav_started.emit(self._nav_mode)
             else:
-                # Start nav on TabletPress OR TabletMove with barrel held.
-                # On XP-Pen the barrel button fires as TabletMove (hover), not TabletPress.
-                if not self._nav_active:
-                    self._nav_mode   = self._nav_mode_from(mod)
-                    self._nav_active = True
-                    self._last_pos   = pos
-                    self.nav_started.emit(self._nav_mode)
-                else:
-                    dx = pos.x() - self._last_pos.x()
-                    dy = pos.y() - self._last_pos.y()
-                    self._last_pos = pos
-                    if dx or dy:
-                        self.nav_moved.emit(dx, dy)
+                dx = pos.x() - self._last_pos.x()
+                dy = pos.y() - self._last_pos.y()
+                self._last_pos = pos
+                if dx or dy:
+                    self.nav_moved.emit(dx, dy)
             event.accept()
             return True
 
@@ -196,7 +201,9 @@ class InputHandler(QObject):
             self._painting = False
             self.paint_ended.emit()
             return True
-        if event.button() == self._mouse_nav_btn and self._nav_active:
+        # Accept any nav button release, not just the one that started nav.
+        # Covers the case where press came via the tablet path and release via mouse.
+        if (event.button() & self._MOUSE_NAV_BUTTONS) and self._nav_active:
             self._nav_active = False
             self.nav_ended.emit()
             return True
