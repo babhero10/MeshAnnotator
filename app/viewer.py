@@ -45,6 +45,7 @@ class ViewerWidget(QWidget):
         self.setMinimumSize(400, 300)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
+        self.setCursor(Qt.BlankCursor)
         # WA_TabletTracking: deliver TabletMove events even when the pen is hovering
         # (not touching). Without this the brush cursor only appears after first contact.
         self.setAttribute(Qt.WA_TabletTracking, True)

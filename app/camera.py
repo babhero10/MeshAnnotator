@@ -11,8 +11,8 @@ class ArcballCamera:
         self.phi      = 1.0   # vertical angle (radians)
 
     def rotate(self, dx: float, dy: float, sensitivity: float = 0.005):
-        self.theta -= dx * sensitivity
-        self.phi    = float(np.clip(self.phi - dy * sensitivity, 0.05, np.pi - 0.05))
+        self.theta += dx * sensitivity
+        self.phi    = float(np.clip(self.phi + dy * sensitivity, 0.05, np.pi - 0.05))
 
     def pan(self, dx: float, dy: float, sensitivity: float = 0.001):
         fwd   = self.get_forward()
