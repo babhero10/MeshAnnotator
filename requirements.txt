@@ -1,0 +1,4 @@
+open3d>=0.17.0
+PyQt5>=5.15.0
+plyfile>=0.9
+numpy>=1.21.0
