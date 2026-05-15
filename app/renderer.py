@@ -122,6 +122,20 @@ class MeshRenderer:
     # Render / project
     # ------------------------------------------------------------------
 
+    def get_view_matrix(self) -> np.ndarray | None:
+        """Return the current 4×4 camera view matrix."""
+        if self._scene is None:
+            return None
+        return np.array(self._scene.camera.get_view_matrix(), dtype=np.float64)
+
+    def render_depth_view_space(self) -> np.ndarray | None:
+        """Render depth as positive view-space distances (camera plane to surface).
+        Uses z_in_view_space=True so values are unaffected by Filament's reversed-Z."""
+        if not self._ensure():
+            return None
+        return np.asarray(
+            self._renderer.render_to_depth_image(z_in_view_space=True), dtype=np.float32)
+
     def render(self) -> np.ndarray | None:
         """Render scene; return HxWx3 uint8 array or None."""
         if not self._ensure():

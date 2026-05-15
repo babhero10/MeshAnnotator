@@ -59,11 +59,12 @@ class ViewerWidget(QWidget):
         self._needs_redraw   = False
         self._nav_active     = False
         self._nav_mode       = NavMode.ROTATE
-        self._verts_np:           np.ndarray | None = None
-        self._verts_normals:      np.ndarray | None = None  # Nx3 unit normals (fallback)
-        self._verts_2d:           np.ndarray | None = None  # render-buffer pixel coords Nx2
-        self._verts_cam_dist:     np.ndarray | None = None  # camera distance per vertex N
-        self._pixel_min_cam_dist: np.ndarray | None = None  # min cam-dist per render pixel
+        self._verts_np:       np.ndarray | None = None
+        self._verts_normals:  np.ndarray | None = None  # Nx3 unit normals (fallback only)
+        self._verts_2d:       np.ndarray | None = None  # render-buffer pixel coords Nx2
+        self._verts_vs_depth: np.ndarray | None = None  # view-space depth per vertex N
+        self._depth_buf_vs:   np.ndarray | None = None  # rendered view-space depth HxW
+        self._mesh_tol:       float = 1.0               # world-unit depth tolerance
         self._wire_edges:    np.ndarray | None = None  # all mesh edges Mx2
         self._proj_dirty     = True
         self._show_wireframe = False
@@ -138,19 +139,20 @@ class ViewerWidget(QWidget):
         mesh.vertex_colors = o3d.utility.Vector3dVector(
             colors.astype(np.float64) / 255.0)
         self._mesh          = mesh
-        self._verts_np            = vertices.copy()
-        self._verts_2d            = None
-        self._verts_normals       = None
-        self._verts_cam_dist      = None
-        self._pixel_min_cam_dist  = None
-        self._proj_dirty          = True
+        self._verts_np      = vertices.copy()
+        self._verts_2d      = None
+        self._verts_normals = None
+        self._verts_vs_depth = None
+        self._depth_buf_vs   = None
+        self._proj_dirty     = True
         self._wire_edges      = _all_mesh_edges(faces)
         self._pending_colors  = None  # clear any leftover pending from previous mesh
 
         bbox = mesh.get_axis_aligned_bounding_box()
         diag = np.linalg.norm(
             np.asarray(bbox.get_max_bound()) - np.asarray(bbox.get_min_bound()))
-        self._camera = ArcballCamera(bbox.get_center(), distance=diag * 1.5)
+        self._camera    = ArcballCamera(bbox.get_center(), distance=diag * 1.5)
+        self._mesh_tol  = float(diag) * 0.01  # world-unit tolerance for depth test
 
         self._renderer.upload_geometry(mesh, compute_normals=True)
 
@@ -234,11 +236,12 @@ class ViewerWidget(QWidget):
                            rr: float) -> np.ndarray | None:
         """Boolean mask of vertices that are (a) within paint radius and (b) visible.
 
-        Visibility is tested by comparing each vertex's camera distance against the
-        minimum camera distance recorded for its screen pixel (built in _do_render).
-        A vertex is visible when it is the closest (or nearly the closest) vertex at
-        that pixel.  This correctly rejects both back-face vertices and any vertex
-        occluded by another part of the mesh, with no depth-buffer format assumptions.
+        Visibility uses a face-accurate depth test:
+        - Each vertex's view-space depth is compared against the rendered depth buffer
+          at its screen pixel.
+        - The depth buffer records the first FACE hit by each camera ray, so back-face
+          vertices that fall between front vertices (pixel gaps) are still rejected.
+        - View-space depth (z_in_view_space=True) is free from Filament's reversed-Z.
         """
         if self._verts_2d is None:
             return None
@@ -250,19 +253,18 @@ class ViewerWidget(QWidget):
         if not in_radius.any():
             return in_radius
 
-        if self._pixel_min_cam_dist is not None and self._verts_cam_dist is not None:
-            dh, dw = self._pixel_min_cam_dist.shape
+        if self._depth_buf_vs is not None and self._verts_vs_depth is not None:
+            dh, dw = self._depth_buf_vs.shape
             px = np.clip(self._verts_2d[:, 0].astype(np.int32), 0, dw - 1)
             py = np.clip(self._verts_2d[:, 1].astype(np.int32), 0, dh - 1)
-            min_dist = self._pixel_min_cam_dist[py, px]
-            # Accept vertex if it is within 1.5 % of the nearest vertex at its pixel.
-            # 1.5 % covers curvature variation between adjacent same-surface vertices
-            # while rejecting back-surface vertices, which are always more than that
-            # farther away (e.g. a 3 mm thick tooth at 50 mm = 6 % difference).
-            visible = self._verts_cam_dist <= min_dist * 1.015
+            buf = self._depth_buf_vs[py, px]   # depth of first face at each pixel
+            vd  = self._verts_vs_depth
+            # _mesh_tol (1 % of bbox diagonal) gives world-unit slack for normal
+            # interpolation across a face without letting back faces through.
+            visible = (vd > 0.0) & (vd <= buf + self._mesh_tol)
             return in_radius & visible
 
-        # Fallback before the first render: normal dot-product test
+        # Fallback before first render: normal dot-product test
         if self._camera is None or self._verts_normals is None:
             return in_radius
         cam_pos = self._camera.get_position()
@@ -330,21 +332,19 @@ class ViewerWidget(QWidget):
         if self._proj_dirty and self._verts_np is not None:
             self._verts_2d, _ = self._renderer.project_vertices_with_depth(self._verts_np)
 
-            # Build a per-pixel minimum-camera-distance map for occlusion testing.
-            # Each pixel stores the distance of the closest vertex that projects there.
-            # This is coordinate-system agnostic (no depth buffer format assumptions).
-            cam_pos   = self._camera.get_position()
-            cam_dists = np.linalg.norm(
-                self._verts_np - cam_pos, axis=1).astype(np.float32)
-            self._verts_cam_dist = cam_dists
+            # View-space depth per vertex: distance from the camera plane along its axis.
+            # Computed from the view matrix (no projection / no reversed-Z involved).
+            # In Open3D's OpenGL-convention view space the camera looks in -Z, so
+            # objects in front have negative z; negate to get positive depths.
+            view_mat = self._renderer.get_view_matrix()
+            if view_mat is not None and self._verts_2d is not None:
+                vh = np.hstack([self._verts_np.astype(np.float64),
+                                np.ones((len(self._verts_np), 1))])
+                self._verts_vs_depth = (-( view_mat @ vh.T)[2]).astype(np.float32)
 
-            rw, rh = self._renderer.size
-            if self._verts_2d is not None:
-                px = np.clip(self._verts_2d[:, 0].astype(np.int32), 0, rw - 1)
-                py = np.clip(self._verts_2d[:, 1].astype(np.int32), 0, rh - 1)
-                min_map = np.full(rh * rw, np.inf, dtype=np.float32)
-                np.minimum.at(min_map, py * rw + px, cam_dists)
-                self._pixel_min_cam_dist = min_map.reshape(rh, rw)
+                # Render depth in view-space (z_in_view_space=True returns the same
+                # positive distances regardless of Filament's internal reversed-Z).
+                self._depth_buf_vs = self._renderer.render_depth_view_space()
 
             self._proj_dirty = False
 
