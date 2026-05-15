@@ -130,13 +130,6 @@ class MeshRenderer:
             self._renderer.render_to_image(), dtype=np.uint8).copy()
         return self._last_image
 
-    def render_depth(self) -> np.ndarray | None:
-        """Render depth buffer; return HxW float32 in window-space [0..1], or None.
-        Background pixels (no geometry) have value 1.0."""
-        if not self._ensure():
-            return None
-        return np.asarray(self._renderer.render_to_depth_image(), dtype=np.float32)
-
     def project_vertices(self, vertices: np.ndarray) -> np.ndarray | None:
         """Project Nx3 world coords → Nx2 render-buffer pixel coords."""
         coords, _ = self.project_vertices_with_depth(vertices)

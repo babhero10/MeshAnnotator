@@ -59,11 +59,11 @@ class ViewerWidget(QWidget):
         self._needs_redraw   = False
         self._nav_active     = False
         self._nav_mode       = NavMode.ROTATE
-        self._verts_np:      np.ndarray | None = None
-        self._verts_normals: np.ndarray | None = None  # Nx3 unit normals (kept for fallback)
-        self._verts_2d:      np.ndarray | None = None  # render-buffer pixel coords Nx2
-        self._verts_depth:   np.ndarray | None = None  # window-space depth per vertex N
-        self._cached_depth:  np.ndarray | None = None  # last rendered depth buffer HxW
+        self._verts_np:           np.ndarray | None = None
+        self._verts_normals:      np.ndarray | None = None  # Nx3 unit normals (fallback)
+        self._verts_2d:           np.ndarray | None = None  # render-buffer pixel coords Nx2
+        self._verts_cam_dist:     np.ndarray | None = None  # camera distance per vertex N
+        self._pixel_min_cam_dist: np.ndarray | None = None  # min cam-dist per render pixel
         self._wire_edges:    np.ndarray | None = None  # all mesh edges Mx2
         self._proj_dirty     = True
         self._show_wireframe = False
@@ -138,12 +138,12 @@ class ViewerWidget(QWidget):
         mesh.vertex_colors = o3d.utility.Vector3dVector(
             colors.astype(np.float64) / 255.0)
         self._mesh          = mesh
-        self._verts_np      = vertices.copy()
-        self._verts_2d      = None
-        self._verts_depth   = None
-        self._cached_depth  = None
-        self._verts_normals = None
-        self._proj_dirty    = True
+        self._verts_np            = vertices.copy()
+        self._verts_2d            = None
+        self._verts_normals       = None
+        self._verts_cam_dist      = None
+        self._pixel_min_cam_dist  = None
+        self._proj_dirty          = True
         self._wire_edges      = _all_mesh_edges(faces)
         self._pending_colors  = None  # clear any leftover pending from previous mesh
 
@@ -234,14 +234,11 @@ class ViewerWidget(QWidget):
                            rr: float) -> np.ndarray | None:
         """Boolean mask of vertices that are (a) within paint radius and (b) visible.
 
-        rx, ry, rr are in render-buffer pixel coordinates.
-        Returns None when vertex projection data is not available yet.
-
-        Visibility is tested with a depth buffer comparison: each candidate vertex's
-        projected window-space depth is compared against the rendered depth at the same
-        pixel.  A vertex is visible only when its depth is at or near the surface depth
-        stored in the buffer.  This correctly rejects both backface vertices and any
-        vertex occluded by another part of the mesh (painting through the model).
+        Visibility is tested by comparing each vertex's camera distance against the
+        minimum camera distance recorded for its screen pixel (built in _do_render).
+        A vertex is visible when it is the closest (or nearly the closest) vertex at
+        that pixel.  This correctly rejects both back-face vertices and any vertex
+        occluded by another part of the mesh, with no depth-buffer format assumptions.
         """
         if self._verts_2d is None:
             return None
@@ -253,21 +250,19 @@ class ViewerWidget(QWidget):
         if not in_radius.any():
             return in_radius
 
-        # Depth buffer visibility — only vertices whose projected depth matches
-        # the rendered surface depth at that pixel are considered visible.
-        if self._cached_depth is not None and self._verts_depth is not None:
-            dh, dw = self._cached_depth.shape
+        if self._pixel_min_cam_dist is not None and self._verts_cam_dist is not None:
+            dh, dw = self._pixel_min_cam_dist.shape
             px = np.clip(self._verts_2d[:, 0].astype(np.int32), 0, dw - 1)
             py = np.clip(self._verts_2d[:, 1].astype(np.int32), 0, dh - 1)
-            buf_depth  = self._cached_depth[py, px]
-            vert_depth = self._verts_depth
-            # Accept vertices on the near side of, or very close to, the visible surface.
-            # Tolerance of 0.01 in window-space [0..1] handles depth precision noise
-            # without allowing occluded vertices to bleed through.
-            visible = (vert_depth >= 0.0) & (vert_depth <= buf_depth + 0.01)
+            min_dist = self._pixel_min_cam_dist[py, px]
+            # Accept vertex if it is within 1.5 % of the nearest vertex at its pixel.
+            # 1.5 % covers curvature variation between adjacent same-surface vertices
+            # while rejecting back-surface vertices, which are always more than that
+            # farther away (e.g. a 3 mm thick tooth at 50 mm = 6 % difference).
+            visible = self._verts_cam_dist <= min_dist * 1.015
             return in_radius & visible
 
-        # Fallback when depth data not yet available: use normal dot product
+        # Fallback before the first render: normal dot-product test
         if self._camera is None or self._verts_normals is None:
             return in_radius
         cam_pos = self._camera.get_position()
@@ -333,10 +328,25 @@ class ViewerWidget(QWidget):
         self._needs_redraw  = False
 
         if self._proj_dirty and self._verts_np is not None:
-            self._verts_2d, self._verts_depth = \
-                self._renderer.project_vertices_with_depth(self._verts_np)
-            self._cached_depth = self._renderer.render_depth()
-            self._proj_dirty   = False
+            self._verts_2d, _ = self._renderer.project_vertices_with_depth(self._verts_np)
+
+            # Build a per-pixel minimum-camera-distance map for occlusion testing.
+            # Each pixel stores the distance of the closest vertex that projects there.
+            # This is coordinate-system agnostic (no depth buffer format assumptions).
+            cam_pos   = self._camera.get_position()
+            cam_dists = np.linalg.norm(
+                self._verts_np - cam_pos, axis=1).astype(np.float32)
+            self._verts_cam_dist = cam_dists
+
+            rw, rh = self._renderer.size
+            if self._verts_2d is not None:
+                px = np.clip(self._verts_2d[:, 0].astype(np.int32), 0, rw - 1)
+                py = np.clip(self._verts_2d[:, 1].astype(np.int32), 0, rh - 1)
+                min_map = np.full(rh * rw, np.inf, dtype=np.float32)
+                np.minimum.at(min_map, py * rw + px, cam_dists)
+                self._pixel_min_cam_dist = min_map.reshape(rh, rw)
+
+            self._proj_dirty = False
 
     # ------------------------------------------------------------------
     # Qt paint
