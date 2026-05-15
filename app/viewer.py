@@ -344,6 +344,10 @@ class ViewerWidget(QWidget):
         p.drawEllipse(x - r, y - r, r * 2, r * 2)
         p.setPen(QPen(QColor(int(rc[0]), int(rc[1]), int(rc[2]), 230), 1.5))
         p.drawEllipse(x - r + 2, y - r + 2, r * 2 - 4, r * 2 - 4)
+        # Center dot: black outline + white fill for visibility on any background
+        p.setPen(QPen(QColor(0, 0, 0, 220), 1.0))
+        p.setBrush(QColor(255, 255, 255, 220))
+        p.drawEllipse(x - 2, y - 2, 4, 4)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
