@@ -12,19 +12,6 @@ from open3d.visualization import rendering
 
 _FOV = 60.0
 
-# Light directions defined in VIEW space so shading stays constant as you orbit,
-# exactly like Blender's Solid viewport.
-# Convention: +X right, +Y up, -Z into screen (OpenGL/Filament camera space).
-# Each tuple: (name, direction, color, intensity, cast_shadows)
-_LIGHTS_VIEW = [
-    ("key",  np.array([ 0.45, -0.75, -0.50]),  [1.0, 0.97, 0.93], 45000, True),
-    ("fill", np.array([-0.75, -0.10, -0.65]),  [0.72, 0.82, 1.0],  16000, False),
-    ("rim",  np.array([ 0.00, -0.20,  0.98]),  [0.55, 0.62, 0.80], 14000, False),
-]
-# Normalize directions once at import time
-_LIGHTS_VIEW = [(n, d / np.linalg.norm(d), c, i, s)
-                for n, d, c, i, s in _LIGHTS_VIEW]
-
 
 class MeshRenderer:
     def __init__(self, width: int, height: int):
@@ -48,29 +35,10 @@ class MeshRenderer:
     def _init_lighting(self):
         s = self._scene
         s.set_background([0.22, 0.22, 0.22, 1.0])
-
-        # Add lights at placeholder world-space directions; update_light_directions()
-        # will orient them correctly into view space on the first camera apply.
-        for name, d_vs, color, intensity, shadows in _LIGHTS_VIEW:
-            s.scene.add_directional_light(name, d_vs.tolist(), color, intensity, shadows)
-
-        s.scene.set_indirect_light_intensity(18000)
-        s.view.set_ambient_occlusion(True)
-        s.view.set_post_processing(True)
-
-    def update_light_directions(self, view_R: np.ndarray):
-        """Rotate view-space light dirs into world space so shading is camera-fixed.
-
-        view_R is the 3×3 rotation block of the view matrix (rows = right, up, -fwd).
-        Its transpose maps from view space to world space.
-        """
-        if self._scene is None:
-            return
-        R_inv = view_R.T  # world_from_view: orthogonal so inverse == transpose
-        for name, d_vs, _, _, _ in _LIGHTS_VIEW:
-            d_ws = R_inv @ d_vs
-            d_ws /= np.linalg.norm(d_ws)
-            self._scene.scene.update_light_direction(name, d_ws.tolist())
+        # All shading is computed in software by viewer.py using view-space lights.
+        # The renderer uses defaultUnlit so Open3D contributes zero world-space lighting.
+        s.scene.enable_indirect_light(False)
+        s.scene.set_indirect_light_intensity(0)
 
     def resize(self, width: int, height: int) -> bool:
         """Invalidate renderer on size change; return True if resize occurred."""
@@ -91,11 +59,8 @@ class MeshRenderer:
     @staticmethod
     def _material() -> rendering.MaterialRecord:
         m = rendering.MaterialRecord()
-        m.shader           = "defaultLit"
-        m.base_color       = [1.0, 1.0, 1.0, 1.0]
-        m.base_roughness   = 1.0  # fully Lambertian — zero specular, colors stay saturated
-        m.base_reflectance = 0.0  # no specular at all, exactly like Blender solid clay look
-        m.base_metallic    = 0.0
+        m.shader     = "defaultUnlit"   # vertex colors passed through unchanged
+        m.base_color = [1.0, 1.0, 1.0, 1.0]
         return m
 
     def _put_mesh(self, mesh: o3d.geometry.TriangleMesh):

@@ -22,6 +22,35 @@ from app.renderer import MeshRenderer
 from app.input_handler import InputHandler, NavMode
 from app.config import PALETTE_RGB
 
+# ── Blender-Solid-style view-space studio lights ───────────────────────────────
+# Directions are in camera/view space: +X right, +Y up, -Z into screen.
+# Direction = where light travels (from source toward surface).
+# Shading is computed in Python so it is guaranteed camera-fixed regardless of
+# what Open3D does with its world-space IBL or directional light internals.
+_VS_LIGHTS = [
+    # (view-space direction,              light RGB,               weight)
+    (np.array([ 0.45, -0.75, -0.50]),  np.array([1.00, 0.97, 0.93]),  0.65),  # key
+    (np.array([-0.75, -0.10, -0.65]),  np.array([0.72, 0.82, 1.00]),  0.22),  # fill
+    (np.array([ 0.00, -0.20,  0.98]),  np.array([0.55, 0.62, 0.80]),  0.20),  # rim
+]
+_VS_LIGHTS = [(d / np.linalg.norm(d), c, w) for d, c, w in _VS_LIGHTS]
+_AMBIENT    = 0.18   # minimum brightness so dark faces are never pitch-black
+
+
+def _shade_colors(normals: np.ndarray, view_R: np.ndarray,
+                  colors: np.ndarray) -> np.ndarray:
+    """Lambertian diffuse shading in view space — pure numpy, no specular."""
+    N_vs    = (view_R @ normals.T).T                    # Nx3 normals in view space
+    shading = np.full((len(normals), 3), _AMBIENT, dtype=np.float32)
+    for d_vs, light_rgb, weight in _VS_LIGHTS:
+        # dot(N, -d_vs): negative because d_vs points *toward* the surface
+        NdotL    = np.maximum(0.0, -(N_vs @ d_vs))     # N,
+        shading += NdotL[:, np.newaxis] * (light_rgb * weight)
+    np.clip(shading, 0.0, 1.0, out=shading)
+    result = colors.astype(np.float32) * shading
+    np.clip(result, 0, 255, out=result)
+    return result.astype(np.uint8)
+
 
 def _all_mesh_edges(faces: np.ndarray) -> np.ndarray:
     """All unique undirected edges — fully vectorized, no Python loop."""
@@ -76,8 +105,11 @@ class ViewerWidget(QWidget):
         self._last_render_t   = 0.0
         self._pending_colors: np.ndarray | None = None
 
-        self._brush_radius = 15
-        self.active_color  = PALETTE_RGB[0].copy()
+        self._brush_radius  = 15
+        self.active_color   = PALETTE_RGB[0].copy()
+        self._true_colors:   np.ndarray | None = None   # annotation colors (unshaded)
+        self._view_R:        np.ndarray | None = None   # 3×3 camera rotation (world→view)
+        self._shading_dirty: bool = False
 
         self._connect_input()
 
@@ -138,15 +170,17 @@ class ViewerWidget(QWidget):
         mesh.triangles     = o3d.utility.Vector3iVector(faces)
         mesh.vertex_colors = o3d.utility.Vector3dVector(
             colors.astype(np.float64) / 255.0)
-        self._mesh          = mesh
-        self._verts_np      = vertices.copy()
-        self._verts_2d      = None
-        self._verts_normals = None
+        self._mesh           = mesh
+        self._verts_np       = vertices.copy()
+        self._true_colors    = colors.copy()
+        self._verts_2d       = None
+        self._verts_normals  = None
         self._verts_vs_depth = None
         self._depth_buf_vs   = None
         self._proj_dirty     = True
-        self._wire_edges      = _all_mesh_edges(faces)
-        self._pending_colors  = None
+        self._wire_edges     = _all_mesh_edges(faces)
+        self._pending_colors = None
+        self._shading_dirty  = True
 
         bbox = mesh.get_axis_aligned_bounding_box()
         diag = np.linalg.norm(
@@ -171,7 +205,7 @@ class ViewerWidget(QWidget):
     def update_colors(self, colors: np.ndarray):
         if self._mesh is None:
             return
-        self._pending_colors = colors
+        self._pending_colors = colors   # triggers shading recompute in _do_render
         self._needs_redraw   = True
 
     def toggle_wireframe(self):
@@ -262,15 +296,12 @@ class ViewerWidget(QWidget):
             up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         self._renderer.setup_camera(target, pos, up)
 
-        # Build view-space rotation from camera basis vectors and pass to renderer
-        # so lights stay fixed on screen as the camera orbits (Blender Solid behavior).
-        fwd   = target - pos
-        fwd  /= np.linalg.norm(fwd)
-        right = np.cross(fwd, up); right /= np.linalg.norm(right)
+        # Compute view-space rotation matrix for software shading (Blender Solid behavior).
+        fwd   = target - pos;  fwd   /= np.linalg.norm(fwd)
+        right = np.cross(fwd, up);  right /= np.linalg.norm(right)
         tup   = np.cross(right, fwd)
-        # View matrix rotation rows: [right, tup, -fwd]  (OpenGL convention)
-        view_R = np.array([right, tup, -fwd], dtype=np.float64)
-        self._renderer.update_light_directions(view_R)
+        self._view_R       = np.array([right, tup, -fwd], dtype=np.float64)
+        self._shading_dirty = True
 
         self._proj_dirty   = True
         self._needs_redraw = True
@@ -294,11 +325,20 @@ class ViewerWidget(QWidget):
         self.update()
 
     def _do_render(self):
+        # Accept new annotation colors from a paint stroke
         if self._pending_colors is not None:
-            self._mesh.vertex_colors = o3d.utility.Vector3dVector(
-                self._pending_colors.astype(np.float64) / 255.0)
-            self._renderer.update_colors(self._mesh)
+            self._true_colors    = self._pending_colors
             self._pending_colors = None
+            self._shading_dirty  = True
+
+        # Recompute shaded display colors whenever camera or annotation colors changed
+        if (self._shading_dirty and self._mesh is not None
+                and self._verts_normals is not None and self._view_R is not None):
+            shaded = _shade_colors(self._verts_normals, self._view_R, self._true_colors)
+            self._mesh.vertex_colors = o3d.utility.Vector3dVector(
+                shaded.astype(np.float64) / 255.0)
+            self._renderer.update_colors(self._mesh)
+            self._shading_dirty = False
 
         arr = self._renderer.render()
         if arr is None:
