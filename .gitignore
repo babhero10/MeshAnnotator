@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# App config (user-specific, stored in ~/.tooth_annotator/)
+config.json
+
+# Large data / datasets
+*.ply
+*.stl
+*.obj
+*.off
+data/
+datasets/
+output/
+
+# Logs and temp
+*.log
+*.tmp
+plan.txt
+core

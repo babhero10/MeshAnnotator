@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import os
 import numpy as np
+from enum import Enum, auto
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QFileDialog,
     QMessageBox, QSplitter, QDialog, QTextEdit, QFrame, QSlider, QLineEdit,
+    QApplication,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QKeySequence, QShortcut, QAction, QColor, QPalette
+
+
+class ToolMode(Enum):
+    PAINT  = auto()
+    SELECT = auto()
 
 from app.viewer import ViewerWidget
 from app.palette_panel import PalettePanel, PaletteEditorDialog
@@ -124,12 +132,22 @@ class ShortcutHelpDialog(QDialog):
       <tr><td><b>F</b></td><td>Frame mesh</td></tr>
       <tr><td><b>Numpad 1 / 3 / 7 / 0</b></td><td>Front / Right / Top / Reset</td></tr>
     </table>
-    <h3>Annotation</h3>
+    <h3>Annotation — Paint Mode</h3>
     <table>
       <tr><td><b>Left-click / drag</b></td><td>Paint</td></tr>
       <tr><td><b>1 – 9, 0</b></td><td>Select color 1–10</td></tr>
       <tr><td><b>[ / ]</b></td><td>Decrease / Increase brush size</td></tr>
       <tr><td><b>W</b></td><td>Toggle wireframe</td></tr>
+    </table>
+    <h3>Annotation — Select Mode</h3>
+    <table>
+      <tr><td><b>S</b></td><td>Toggle Select / Paint mode</td></tr>
+      <tr><td><b>Click</b></td><td>Select connected color cluster</td></tr>
+      <tr><td><b>Shift + Click</b></td><td>Add cluster to selection</td></tr>
+      <tr><td><b>= / +</b></td><td>Expand selection one vertex ring</td></tr>
+      <tr><td><b>-</b></td><td>Shrink selection one vertex ring</td></tr>
+      <tr><td><b>Enter</b></td><td>Fill selection with active color</td></tr>
+      <tr><td><b>Esc</b></td><td>Clear selection, return to Paint mode</td></tr>
     </table>
     <h3>Files</h3>
     <table>
@@ -191,6 +209,8 @@ class AnnotatorWindow(QMainWindow):
         self._model    = AnnotationModel()
         self._unsaved  = False
         self._brush_radius: int = self._cfg.get("brush_radius", 15)
+        self._mode: ToolMode    = ToolMode.PAINT
+        self._stroke_is_first   = False
 
         self._build_ui()
         self._build_menu()
@@ -336,6 +356,27 @@ class AnnotatorWindow(QMainWindow):
 
         tb.addSpacing(8)
 
+        # Select mode toggle
+        self._select_btn = QPushButton("Select")
+        self._select_btn.setCheckable(True)
+        self._select_btn.setFixedWidth(58)
+        self._select_btn.setToolTip(
+            "Select mode (S)  —  click mesh to select color cluster\n"
+            "Shift+click to add  ·  =/ + expand  ·  - shrink  ·  Enter fill  ·  Esc clear")
+        self._select_btn.setStyleSheet(_BTN_TOGGLE)
+        self._select_btn.clicked.connect(self._on_select_btn_clicked)
+        tb.addWidget(self._select_btn)
+
+        tb.addSpacing(8)
+
+        # Separator
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.Shape.VLine)
+        sep3.setStyleSheet("color: #252538;")
+        tb.addWidget(sep3)
+
+        tb.addSpacing(8)
+
         # Navigation buttons + jump-to input
         self._prev_btn = QPushButton("◀")
         self._next_btn = QPushButton("▶")
@@ -381,6 +422,12 @@ class AnnotatorWindow(QMainWindow):
         edit_menu = mb.addMenu("Edit")
         self._add_action(edit_menu, "Undo", self._undo, "Ctrl+Z")
         self._add_action(edit_menu, "Redo", self._redo, "Ctrl+Y")
+        edit_menu.addSeparator()
+        self._add_action(edit_menu, "Toggle Select Mode",  self._toggle_select_mode, "S")
+        self._add_action(edit_menu, "Expand Selection",    self._expand_selection,   "=")
+        self._add_action(edit_menu, "Shrink Selection",    self._shrink_selection,   "-")
+        self._add_action(edit_menu, "Fill Selection",      self._fill_selection)
+        self._add_action(edit_menu, "Clear Selection",     self._clear_selection)
 
         view_menu = mb.addMenu("View")
         self._add_action(view_menu, "Frame Mesh",       self._viewer.frame_mesh,  "F")
@@ -442,6 +489,18 @@ class AnnotatorWindow(QMainWindow):
 
         # Strip KeypadModifier so numpad digits that aren't view-preset keys
         # (2, 4, 5, 6, 8, 9) also trigger color selection.
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if (self._mode == ToolMode.SELECT
+                    and not self._goto_input.hasFocus()):
+                self._fill_selection()
+                return
+            super().keyPressEvent(e)
+            return
+
+        if key == Qt.Key.Key_Escape and self._mode == ToolMode.SELECT:
+            self._clear_selection()
+            return
+
         plain_mod = mod & ~Qt.KeyboardModifier.KeypadModifier
         char = e.text()
         if char in {"1","2","3","4","5","6","7","8","9","0"} and not plain_mod:
@@ -487,6 +546,8 @@ class AnnotatorWindow(QMainWindow):
 
         self._model.load(verts, faces, colors)
         self._unsaved = False
+        if self._mode == ToolMode.SELECT:
+            self._enter_paint_mode()
         self._viewer.load_mesh(verts, faces, colors)
         self._update_title()
         self._update_nav_buttons()
@@ -572,13 +633,31 @@ class AnnotatorWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_stroke_begin(self):
-        self._model.save_snapshot()
+        self._stroke_is_first = True
+        if self._mode == ToolMode.PAINT:
+            self._model.save_snapshot()
 
     @pyqtSlot(float, float, float, int)
     def _on_paint_stroke(self, x: float, y: float,
                          radius: float, color_override: int):
         if not self._model.loaded:
             return
+        if self._mode == ToolMode.SELECT:
+            if self._stroke_is_first:
+                self._stroke_is_first = False
+                add = bool(QApplication.keyboardModifiers()
+                           & Qt.KeyboardModifier.ShiftModifier)
+                xr, yr, _ = self._viewer.to_render_coords(x, y, 1.0)
+                vidx = self._viewer.pick_vertex(xr, yr)
+                if vidx is not None:
+                    count = self._model.select_cluster(vidx, add=add)
+                    self._viewer.set_selection(self._model.selection)
+                    self._status.showMessage(
+                        f"Selected  {count:,} vertices"
+                        + ("  (added)" if add else ""))
+            return
+
+        self._stroke_is_first = False
         color = (_app_config.PALETTE_RGB[color_override] if color_override >= 0
                  else _app_config.PALETTE_RGB[self._palette.current_index])
         xr, yr, r_buf = self._viewer.to_render_coords(x, y, radius)
@@ -595,6 +674,76 @@ class AnnotatorWindow(QMainWindow):
     @pyqtSlot()
     def _on_stroke_end(self):
         pass
+
+    # ── Select mode ────────────────────────────────────────────────────────
+
+    def _on_select_btn_clicked(self):
+        if self._select_btn.isChecked():
+            self._enter_select_mode()
+        else:
+            self._enter_paint_mode()
+
+    def _toggle_select_mode(self):
+        if self._mode == ToolMode.SELECT:
+            self._enter_paint_mode()
+        else:
+            self._enter_select_mode()
+
+    def _enter_select_mode(self):
+        self._mode = ToolMode.SELECT
+        self._select_btn.setChecked(True)
+        self._viewer.set_select_mode(True)
+        self._status.showMessage(
+            "Select mode  —  click to select color cluster  ·  "
+            "Shift+click add  ·  = expand  ·  - shrink  ·  Enter fill  ·  Esc clear")
+
+    def _enter_paint_mode(self):
+        self._mode = ToolMode.PAINT
+        self._select_btn.setChecked(False)
+        self._viewer.set_select_mode(False)
+        self._status.showMessage("Paint mode")
+
+    def _expand_selection(self):
+        if not self._model.loaded or self._mode != ToolMode.SELECT:
+            return
+        count = self._model.expand_selection()
+        self._viewer.set_selection(self._model.selection)
+        self._status.showMessage(f"Selection expanded  →  {count:,} vertices")
+
+    def _shrink_selection(self):
+        if not self._model.loaded or self._mode != ToolMode.SELECT:
+            return
+        count = self._model.shrink_selection()
+        self._viewer.set_selection(self._model.selection)
+        if count == 0:
+            self._status.showMessage("Selection cleared (shrunk to nothing)")
+        else:
+            self._status.showMessage(f"Selection shrunk  →  {count:,} vertices")
+
+    def _fill_selection(self):
+        if not self._model.loaded or self._mode != ToolMode.SELECT:
+            return
+        if not self._model.has_selection:
+            return
+        self._model.save_snapshot()
+        color = _app_config.PALETTE_RGB[self._palette.current_index]
+        changed = self._model.fill_selection(color)
+        if changed:
+            self._viewer.update_colors(self._model.colors)
+            self._viewer.set_selection(self._model.selection)  # refresh tint
+            if not self._unsaved:
+                self._unsaved = True
+                self._update_title()
+            self._status.showMessage(
+                f"Filled  {self._model.selection_count:,} vertices")
+
+    def _clear_selection(self):
+        if self._mode != ToolMode.SELECT:
+            return
+        self._model.clear_selection()
+        self._viewer.set_selection(None)
+        self._enter_paint_mode()
+        self._status.showMessage("Selection cleared — Paint mode")
 
     # ── Palette / brush ────────────────────────────────────────────────────
 

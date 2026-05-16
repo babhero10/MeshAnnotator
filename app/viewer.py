@@ -35,6 +35,7 @@ _VS_LIGHTS = [
 ]
 _VS_LIGHTS = [(d / np.linalg.norm(d), c, w) for d, c, w in _VS_LIGHTS]
 _AMBIENT    = 0.18   # minimum brightness so dark faces are never pitch-black
+_SEL_COLOR  = np.array([0, 200, 255], dtype=np.float32)  # selection highlight (cyan)
 
 
 def _shade_colors(normals: np.ndarray, view_R: np.ndarray,
@@ -161,6 +162,8 @@ class ViewerWidget(QWidget):
         self._shading_dirty: bool = False
         self._wire_angles:   np.ndarray | None = None   # per-edge dihedral angle
         self._wire_density:  float = 1.0                # 0-1 fraction of edges to show
+        self._selection_mask: np.ndarray | None = None
+        self._select_mode:   bool = False
 
         self._connect_input()
 
@@ -221,18 +224,19 @@ class ViewerWidget(QWidget):
         mesh.triangles     = o3d.utility.Vector3iVector(faces)
         mesh.vertex_colors = o3d.utility.Vector3dVector(
             colors.astype(np.float64) / 255.0)
-        self._mesh           = mesh
-        self._verts_np       = vertices.copy()
-        self._true_colors    = colors.copy()
-        self._verts_2d       = None
-        self._verts_normals  = None
-        self._verts_vs_depth = None
-        self._depth_buf_vs   = None
-        self._proj_dirty     = True
-        self._wire_edges     = _all_mesh_edges(faces)
-        self._wire_angles    = None   # computed after normals are fixed below
-        self._pending_colors = None
-        self._shading_dirty  = True
+        self._mesh            = mesh
+        self._verts_np        = vertices.copy()
+        self._true_colors     = colors.copy()
+        self._verts_2d        = None
+        self._verts_normals   = None
+        self._verts_vs_depth  = None
+        self._depth_buf_vs    = None
+        self._proj_dirty      = True
+        self._wire_edges      = _all_mesh_edges(faces)
+        self._wire_angles     = None   # computed after normals are fixed below
+        self._pending_colors  = None
+        self._selection_mask  = None
+        self._shading_dirty   = True
 
         bbox = mesh.get_axis_aligned_bounding_box()
         diag = np.linalg.norm(
@@ -348,6 +352,36 @@ class ViewerWidget(QWidget):
         to_cam  = cam_pos - self._verts_np
         return in_radius & (np.einsum('ij,ij->i', self._verts_normals, to_cam) > 0.0)
 
+    def pick_vertex(self, rx: float, ry: float) -> int | None:
+        """Return index of the nearest visible vertex within 50 px of (rx, ry)
+        in render-space coordinates, or None if nothing is close enough."""
+        if self._verts_2d is None:
+            return None
+        dx    = self._verts_2d[:, 0] - rx
+        dy    = self._verts_2d[:, 1] - ry
+        dist2 = dx * dx + dy * dy
+        if self._depth_buf_vs is not None and self._verts_vs_depth is not None:
+            dh, dw = self._depth_buf_vs.shape
+            px  = np.clip(self._verts_2d[:, 0].astype(np.int32), 0, dw - 1)
+            py  = np.clip(self._verts_2d[:, 1].astype(np.int32), 0, dh - 1)
+            buf = self._depth_buf_vs[py, px]
+            vd  = self._verts_vs_depth
+            invisible = ~((vd > 0.0) & (vd <= buf + self._mesh_tol))
+            dist2 = dist2.copy()
+            dist2[invisible] = np.inf
+        idx = int(dist2.argmin())
+        return idx if dist2[idx] < 2500.0 else None  # 50 px threshold
+
+    def set_selection(self, mask: np.ndarray | None):
+        self._selection_mask = mask
+        self._shading_dirty  = True
+        self._needs_redraw   = True
+
+    def set_select_mode(self, on: bool):
+        self._select_mode = on
+        self.setCursor(Qt.CursorShape.CrossCursor if on
+                       else Qt.CursorShape.BlankCursor)
+
     @property
     def verts_2d(self) -> np.ndarray | None:
         return self._verts_2d
@@ -421,6 +455,11 @@ class ViewerWidget(QWidget):
         if (self._shading_dirty and self._mesh is not None
                 and self._verts_normals is not None and self._view_R is not None):
             shaded = _shade_colors(self._verts_normals, self._view_R, self._true_colors)
+            if self._selection_mask is not None and self._selection_mask.any():
+                sel    = self._selection_mask
+                sf     = shaded.astype(np.float32)
+                sf[sel] = sf[sel] * 0.25 + _SEL_COLOR * 0.75
+                shaded  = np.clip(sf, 0, 255).astype(np.uint8)
             self._mesh.vertex_colors = o3d.utility.Vector3dVector(
                 shaded.astype(np.float64) / 255.0)
             self._renderer.update_colors(self._mesh)
@@ -460,6 +499,9 @@ class ViewerWidget(QWidget):
             self._draw_cursor(p)
 
     def _draw_cursor(self, p: QPainter):
+        if self._select_mode:
+            self._draw_crosshair(p)
+            return
         x, y = self._mouse_pos.x(), self._mouse_pos.y()
         r    = self._brush_radius
         rc   = self.active_color
@@ -472,6 +514,19 @@ class ViewerWidget(QWidget):
         p.setPen(QPen(QColor(0, 0, 0, 220), 1.0))
         p.setBrush(QColor(255, 255, 255, 220))
         p.drawEllipse(x - 2, y - 2, 4, 4)
+
+    def _draw_crosshair(self, p: QPainter):
+        x, y = self._mouse_pos.x(), self._mouse_pos.y()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(0, 0, 0, 180), 2.5))
+        p.drawLine(x - 12, y, x + 12, y)
+        p.drawLine(x, y - 12, x, y + 12)
+        p.setPen(QPen(QColor(255, 180, 30, 240), 1.5))
+        p.drawLine(x - 11, y, x + 11, y)
+        p.drawLine(x, y - 11, x, y + 11)
+        p.setPen(QPen(QColor(0, 0, 0, 200), 1.0))
+        p.setBrush(QColor(255, 180, 30, 230))
+        p.drawEllipse(x - 3, y - 3, 6, 6)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
