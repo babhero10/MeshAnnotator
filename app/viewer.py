@@ -13,7 +13,7 @@ import time
 import numpy as np
 import open3d as o3d
 
-from PyQt5.QtWidgets import QWidget, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QSizePolicy, QApplication
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QTimer
 from PyQt5.QtGui import QImage, QPainter, QPen, QColor, QTabletEvent
 
@@ -69,7 +69,16 @@ class ViewerWidget(QWidget):
         self._proj_dirty     = True
         self._show_wireframe = False
 
-        self._mouse_pos:      QPoint | None = None
+        self._mouse_pos:       QPoint | None = None
+        self._cursor_hidden:   bool = False
+        # Auto-restore the OS cursor 150 ms after the last event in this widget.
+        # leaveEvent is unreliable on Linux tablets (X11 pointer ≠ pen position),
+        # so we use a timer as the fallback to un-hide the cursor when the pen
+        # moves to the palette or is lifted off the tablet.
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.setSingleShot(True)
+        self._cursor_timer.setInterval(150)
+        self._cursor_timer.timeout.connect(self.restore_cursor)
         self._cached_qimage:  QImage | None = None
         self._last_render_t   = 0.0
         # Pending color array: defers GPU upload to render time.
@@ -387,24 +396,58 @@ class ViewerWidget(QWidget):
         self._needs_redraw = True
 
     # ------------------------------------------------------------------
+    # Cursor management
+    # ------------------------------------------------------------------
+
+    def _hide_cursor(self):
+        """Hide the OS cursor and reset the inactivity timer.
+
+        Called on every tablet/mouse event in the viewer.  The timer is
+        restarted each time, so the cursor stays hidden while the pen is
+        actively moving here and reappears 150 ms after it stops (i.e.
+        moves to the palette or lifts off the tablet).
+        """
+        if not self._cursor_hidden:
+            QApplication.setOverrideCursor(Qt.BlankCursor)
+            self._cursor_hidden = True
+        self._cursor_timer.start()   # restart countdown on each event
+
+    def restore_cursor(self):
+        """Restore the OS cursor (timer expiry, leaveEvent, or pen lift)."""
+        self._cursor_timer.stop()
+        if self._cursor_hidden:
+            QApplication.restoreOverrideCursor()
+            self._cursor_hidden = False
+
+    # ------------------------------------------------------------------
     # Input events — delegate entirely to InputHandler
     # ------------------------------------------------------------------
 
     def tabletEvent(self, event: QTabletEvent):
-        self._mouse_pos = event.pos()
-        self._input.handle_tablet(event)
+        self._hide_cursor()
+        # Always derive widget-local position from global coordinates.
+        # On Linux/X11, event.pos() can carry a window-relative offset after the pen
+        # visits another widget (palette panel), causing an apparent upward shift when
+        # returning to the viewer.  globalPos() is always the raw tablet screen position.
+        local_pos = self.mapFromGlobal(event.globalPos())
+        self._mouse_pos = local_pos
+        self._input.handle_tablet(event, local_pos)
 
     def mousePressEvent(self, e):
-        self._input.handle_mouse_press(e)
+        corrected = self.mapFromGlobal(e.globalPos())
+        self._input.handle_mouse_press(e, corrected)
 
     def mouseMoveEvent(self, e):
-        self._mouse_pos = e.pos()
-        self._input.handle_mouse_move(e)
+        self._hide_cursor()
+        corrected = self.mapFromGlobal(e.globalPos())
+        self._mouse_pos = corrected
+        self._input.handle_mouse_move(e, corrected)
 
     def mouseReleaseEvent(self, e):
         self._input.handle_mouse_release(e)
 
     def leaveEvent(self, e):
+        self.restore_cursor()
         self._mouse_pos = None
         self._input.reset()
         self.update()

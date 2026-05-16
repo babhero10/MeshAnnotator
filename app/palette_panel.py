@@ -9,10 +9,26 @@ from __future__ import annotations
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
-    QSlider, QSizePolicy, QFrame,
+    QSlider, QSizePolicy, QFrame, QApplication,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QBrush, QPen, QFont
+from PyQt5.QtCore import Qt, QEvent, QPointF, pyqtSignal
+from PyQt5.QtGui import QColor, QPainter, QBrush, QPen, QFont, QMouseEvent, QTabletEvent
+
+
+class BrushSlider(QSlider):
+    """QSlider with a pointing-hand cursor and a closed-hand cursor while dragging."""
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self.setCursor(Qt.PointingHandCursor)
+        super().mouseReleaseEvent(e)
 
 from app.config import (PALETTE_NAMES, PALETTE_RGB,
                         DEFAULT_BRUSH_RADIUS, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX)
@@ -99,6 +115,7 @@ class PalettePanel(QWidget):
         self.setFixedWidth(200)
         self._swatches:      list[ColorSwatch] = []
         self._current_index: int = 0
+        self._tablet_child:  QWidget | None = None  # child grabbed on TabletPress
         self._build_ui()
 
     @property
@@ -140,7 +157,7 @@ class PalettePanel(QWidget):
         brush_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(brush_label)
 
-        self._brush_slider = QSlider(Qt.Horizontal)
+        self._brush_slider = BrushSlider(Qt.Horizontal)
         self._brush_slider.setMinimum(BRUSH_RADIUS_MIN)
         self._brush_slider.setMaximum(BRUSH_RADIUS_MAX)
         self._brush_slider.setValue(DEFAULT_BRUSH_RADIUS)
@@ -180,6 +197,54 @@ class PalettePanel(QWidget):
         layout.addWidget(save_btn)
 
         self.select_color(0)
+
+    def tabletEvent(self, event: QTabletEvent):
+        """Convert tablet events to correctly-positioned mouse events.
+
+        Child widgets (ColorSwatch, QSlider, QPushButton) don't override
+        tabletEvent, so Qt propagates it here.  We recompute the local
+        position from globalPos() — which is always the correct screen
+        coordinate — rather than trusting event.pos(), which carries the
+        same wrong widget-offset bug as on the viewer side.
+
+        _tablet_child tracks which child was pressed so that drag moves
+        stay routed to the same widget (mirrors mouse-grab behaviour).
+        """
+        local = self.mapFromGlobal(event.globalPos())
+        t     = event.type()
+
+        if t == QEvent.TabletPress:
+            self._tablet_child = self.childAt(local)
+            mtype, btn, btns = QEvent.MouseButtonPress, Qt.LeftButton, Qt.LeftButton
+        elif t == QEvent.TabletMove:
+            mtype = QEvent.MouseMove
+            btn   = Qt.NoButton
+            btns  = Qt.LeftButton if event.pressure() > 0.05 else Qt.NoButton
+        elif t == QEvent.TabletRelease:
+            mtype, btn, btns = QEvent.MouseButtonRelease, Qt.LeftButton, Qt.NoButton
+            child = self._tablet_child
+            self._tablet_child = None
+            target = child if child is not None else self
+            child_local = target.mapFrom(self, local)
+            QApplication.sendEvent(target,
+                QMouseEvent(mtype, QPointF(child_local), event.globalPos(),
+                            btn, btns, event.modifiers()))
+            event.accept()
+            return
+        else:
+            event.ignore()
+            return
+
+        # For Press and Move: use grabbed child (or hit-test for Press)
+        target = (self._tablet_child if self._tablet_child is not None
+                  else self.childAt(local))
+        if target is None:
+            target = self
+        child_local = target.mapFrom(self, local)
+        QApplication.sendEvent(target,
+            QMouseEvent(mtype, QPointF(child_local), event.globalPos(),
+                        btn, btns, event.modifiers()))
+        event.accept()
 
     def _on_swatch_clicked(self, index: int):
         self.select_color(index)

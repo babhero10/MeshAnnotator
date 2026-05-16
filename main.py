@@ -25,11 +25,19 @@ if (sys.platform.startswith("linux")
 # Allow imports from project root
 sys.path.insert(0, os.path.dirname(__file__))
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QTabletEvent
+from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtCore import Qt, QEvent, QPointF
+from PyQt5.QtGui import QTabletEvent, QMouseEvent
 
 from app.annotator_window import AnnotatorWindow
+
+
+_MOUSE_EVENT_TYPES = frozenset({
+    QEvent.MouseButtonPress,
+    QEvent.MouseMove,
+    QEvent.MouseButtonRelease,
+    QEvent.MouseButtonDblClick,
+})
 
 
 class ToothAnnotatorApp(QApplication):
@@ -38,6 +46,12 @@ class ToothAnnotatorApp(QApplication):
     TabletEnterProximity is the only reliable source of pointer type on XP-Pen
     Linux drivers. We use it to tell InputHandler which end of the pen is active,
     rather than trusting the per-event pointerType() which is often wrong.
+
+    notify() globally corrects mouse-event positions on Linux/X11 tablets.
+    Qt computes event.pos() by subtracting the window origin from the global
+    tablet coordinates, but gets the wrong widget origin after the pen visits
+    another widget.  Recomputing from globalPos() → mapFromGlobal() is always
+    correct and fixes clicks in the palette panel as well as the viewer.
     """
 
     def __init__(self, argv):
@@ -46,6 +60,21 @@ class ToothAnnotatorApp(QApplication):
 
     def set_viewer(self, viewer):
         self._viewer = viewer
+
+    def notify(self, obj, event) -> bool:
+        if event.type() in _MOUSE_EVENT_TYPES and isinstance(obj, QWidget):
+            correct = obj.mapFromGlobal(event.globalPos())
+            if correct != event.pos():
+                fixed = QMouseEvent(
+                    event.type(),
+                    QPointF(correct),
+                    event.globalPos(),
+                    event.button(),
+                    event.buttons(),
+                    event.modifiers(),
+                )
+                return super().notify(obj, fixed)
+        return super().notify(obj, event)
 
     def event(self, e: QEvent) -> bool:
         if self._viewer is not None:
@@ -57,6 +86,7 @@ class ToothAnnotatorApp(QApplication):
             elif t == QEvent.TabletLeaveProximity:
                 self._viewer.input_handler.set_eraser_from_proximity(False)
                 self._viewer.input_handler.reset()
+                self._viewer.restore_cursor()
         return super().event(e)
 
 

@@ -74,8 +74,9 @@ class InputHandler(QObject):
     # Tablet
     # ------------------------------------------------------------------
 
-    def handle_tablet(self, event: QTabletEvent) -> bool:
-        pos    = event.pos()
+    def handle_tablet(self, event: QTabletEvent,
+                      pos: QPoint | None = None) -> bool:
+        pos    = pos if pos is not None else event.pos()
         etype  = event.type()
         mod    = event.modifiers()
         barrel = bool(event.buttons() & self._TABLET_BARREL)
@@ -160,36 +161,41 @@ class InputHandler(QObject):
     # mouse event (not a tablet event), we need to accept both buttons.
     _MOUSE_NAV_BUTTONS = Qt.MiddleButton | Qt.RightButton
 
-    def handle_mouse_press(self, event) -> bool:
+    def handle_mouse_press(self, event,
+                           pos: QPoint | None = None) -> bool:
         if self._tablet_active and event.button() == Qt.LeftButton:
             return True  # suppress synthetic duplicate from tablet driver
         if event.button() == Qt.LeftButton:
+            px = float(pos.x() if pos is not None else event.x())
+            py = float(pos.y() if pos is not None else event.y())
             if not self._painting:
                 self._painting = True
                 self.paint_started.emit()
-            self.paint_moved.emit(float(event.x()), float(event.y()),
-                                  float(self.brush_radius), -1)
+            self.paint_moved.emit(px, py, float(self.brush_radius), -1)
             return True
         if event.button() & self._MOUSE_NAV_BUTTONS:
-            self._mouse_nav_btn = event.button()   # remember which button for release
+            self._mouse_nav_btn = event.button()
             self._nav_mode      = self._nav_mode_from(event.modifiers())
             self._nav_active    = True
-            self._last_pos      = event.pos()
+            self._last_pos      = pos if pos is not None else event.pos()
             self.nav_started.emit(self._nav_mode)
             return True
         return False
 
-    def handle_mouse_move(self, event) -> bool:
+    def handle_mouse_move(self, event,
+                          pos: QPoint | None = None) -> bool:
         if self._tablet_active and not (event.buttons() & self._MOUSE_NAV_BUTTONS):
             return True
         if self._painting and (event.buttons() & Qt.LeftButton):
-            self.paint_moved.emit(float(event.x()), float(event.y()),
-                                  float(self.brush_radius), -1)
+            px = float(pos.x() if pos is not None else event.x())
+            py = float(pos.y() if pos is not None else event.y())
+            self.paint_moved.emit(px, py, float(self.brush_radius), -1)
             return True
         if self._nav_active and (event.buttons() & self._mouse_nav_btn):
-            dx = event.x() - self._last_pos.x()
-            dy = event.y() - self._last_pos.y()
-            self._last_pos = event.pos()
+            lp = pos if pos is not None else event.pos()
+            dx = lp.x() - self._last_pos.x()
+            dy = lp.y() - self._last_pos.y()
+            self._last_pos = lp
             self.nav_moved.emit(dx, dy)
             return True
         return False
