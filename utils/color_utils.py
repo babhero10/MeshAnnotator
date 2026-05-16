@@ -1,7 +1,7 @@
 """Color math utilities: LAB conversion, hue, palette snapping."""
 from __future__ import annotations
 import numpy as np
-from app.config import PALETTE_RGB
+import app.config as _cfg
 
 
 def rgb_to_lab(colors_uint8: np.ndarray) -> np.ndarray:
@@ -31,14 +31,14 @@ def snap_to_palette(colors: np.ndarray) -> np.ndarray:
     to collapse onto whichever entry appeared first in the palette.
     """
     colors_lab  = rgb_to_lab(colors)
-    palette_lab = rgb_to_lab(PALETTE_RGB)
+    palette_lab = rgb_to_lab(_cfg.PALETTE_RGB)
     dists  = np.sum((colors_lab[:, None] - palette_lab[None]) ** 2, axis=2)
     result = np.argmin(dists, axis=1)
-    return PALETTE_RGB[result]
+    return _cfg.PALETTE_RGB[result]
 
 
 def colors_are_palette_exact(colors: np.ndarray) -> np.ndarray:
     """Return boolean mask — True where color exactly matches a palette entry."""
     # Broadcast comparison: (N,3) vs (P,3) → (N,P) → reduce over palette axis
-    match = np.all(colors[:, None, :] == PALETTE_RGB[None, :, :], axis=2)
+    match = np.all(colors[:, None, :] == _cfg.PALETTE_RGB[None, :, :], axis=2)
     return match.any(axis=1)

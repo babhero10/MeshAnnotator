@@ -11,7 +11,8 @@ DEFAULT_CONFIG = {
     "brush_radius": 15,
     "snap_on_load": True,
     "wireframe": False,
-    "palette": [],          # populated on first run from built-in defaults
+    "palettes": [],        # list of {name, colors:[{name,rgb}]}
+    "active_palette": "",  # name of the currently active palette
 }
 
 

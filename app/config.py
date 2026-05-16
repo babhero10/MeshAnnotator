@@ -18,6 +18,15 @@ PALETTE: dict[str, tuple[int, int, int]] = {
 PALETTE_NAMES: list[str]   = list(PALETTE.keys())
 PALETTE_RGB:   np.ndarray  = np.array(list(PALETTE.values()), dtype=np.uint8)
 
+
+def set_active_palette(names: list[str], rgbs) -> None:
+    """Replace the module-level palette arrays with new data."""
+    global PALETTE_RGB
+    PALETTE_NAMES.clear()
+    PALETTE_NAMES.extend(names)
+    PALETTE_RGB = np.array(rgbs, dtype=np.uint8)
+
+
 UNDO_HISTORY_SIZE = 20
 
 DEFAULT_BRUSH_RADIUS = 15

@@ -84,7 +84,7 @@ class ToothAnnotatorApp(QApplication):
 def main():
     # Qt6 enables HiDPI scaling automatically — no setAttribute calls needed.
     app = ToothAnnotatorApp(sys.argv)
-    app.setApplicationName("Tooth Annotator")
+    app.setApplicationName("Mesh Annotator")
 
     win = AnnotatorWindow()
     app.set_viewer(win.viewer)

@@ -17,38 +17,45 @@ from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QKeySequence, QShortcut, QAction, QColor, QPalette
 
 from app.viewer import ViewerWidget
-from app.palette_panel import PalettePanel
+from app.palette_panel import PalettePanel, PaletteEditorDialog
 from app.annotation_model import AnnotationModel
 from app.file_manager import FileManager, load_config, save_config
 import app.config as _app_config
-from app.config import PALETTE_RGB, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX, BRUSH_RADIUS_STEP
+from app.config import BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX, BRUSH_RADIUS_STEP
 from utils.ply_io import read_ply, write_ply
 from utils.color_utils import snap_to_palette, colors_are_palette_exact
 
 
-def _sync_palette(cfg: dict):
-    """Apply palette from config → module arrays, or write defaults if absent.
+def _apply_palette(colors: list) -> None:
+    """Load a list of color dicts into the module-level palette arrays."""
+    names = [c.get("name", f"Color {i + 1}") for i, c in enumerate(colors)]
+    rgbs  = [c.get("rgb", [128, 128, 128]) for c in colors]
+    _app_config.set_active_palette(names, rgbs)
 
-    Users can customise colors by editing the ``palette`` list in config.json.
-    Each entry: {"name": "Red", "rgb": [255, 0, 0]}
-    """
-    if not cfg.get("palette"):
-        # First run — write the built-in defaults so users can edit them.
-        cfg["palette"] = [
+
+def _sync_palette(cfg: dict) -> None:
+    """Migrate old config format and activate the stored palette."""
+    # Migration: old flat "palette" list → new multi-palette "palettes" list
+    if cfg.get("palette") and not cfg.get("palettes"):
+        cfg["palettes"] = [{"name": "Default", "colors": cfg.pop("palette")}]
+        cfg.setdefault("active_palette", "Default")
+
+    # First run: seed with built-in defaults
+    if not cfg.get("palettes"):
+        default_colors = [
             {"name": name, "rgb": list(map(int, rgb))}
-            for name, rgb in zip(_app_config.PALETTE_NAMES,
-                                  _app_config.PALETTE_RGB)
+            for name, rgb in zip(_app_config.PALETTE_NAMES, _app_config.PALETTE_RGB)
         ]
-        return
+        cfg["palettes"] = [{"name": "Default", "colors": default_colors}]
+        cfg["active_palette"] = "Default"
 
-    entries = cfg["palette"]
-    n = min(len(entries), len(_app_config.PALETTE_NAMES))
-    for i in range(n):
-        e = entries[i]
-        _app_config.PALETTE_NAMES[i] = str(e.get("name", _app_config.PALETTE_NAMES[i]))
-        rgb = e.get("rgb", [])
-        if len(rgb) == 3:
-            _app_config.PALETTE_RGB[i] = np.clip(rgb, 0, 255).astype(np.uint8)
+    # Activate the stored palette (fall back to first if name is gone)
+    active  = cfg.get("active_palette", "")
+    by_name = {p["name"]: p for p in cfg["palettes"]}
+    if active not in by_name:
+        active = cfg["palettes"][0]["name"]
+        cfg["active_palette"] = active
+    _apply_palette(by_name[active]["colors"])
 
 # ── Shared button styles ──────────────────────────────────────────────────────
 _BTN = (
@@ -174,7 +181,7 @@ class ShortcutHelpDialog(QDialog):
 class AnnotatorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Tooth Annotator")
+        self.setWindowTitle("Mesh Annotator")
         self.resize(1300, 840)
         self.setStyleSheet(_WINDOW_STYLE)
 
@@ -192,6 +199,12 @@ class AnnotatorWindow(QMainWindow):
 
         self._viewer.brush_radius = self._brush_radius
         self._palette.set_brush_radius(self._brush_radius)
+
+        # Populate palette selector
+        palette_names = [p["name"] for p in self._cfg.get("palettes", [])]
+        active_name   = self._cfg.get("active_palette", "")
+        self._palette.set_palette_names(palette_names, active_name)
+        self._palette.rebuild_swatches()
 
         # Restore wireframe state
         if self._cfg.get("wireframe", False):
@@ -397,6 +410,9 @@ class AnnotatorWindow(QMainWindow):
         self._palette.color_selected.connect(self._on_palette_color_selected)
         self._palette.brush_radius_changed.connect(self._on_brush_radius_changed)
         self._palette.save_requested.connect(self._save_current)
+        self._palette.palette_switch_requested.connect(self._switch_palette)
+        self._palette.palette_new_requested.connect(self._new_palette)
+        self._palette.palette_edit_requested.connect(self._edit_palette)
         self._viewer.stroke_begin.connect(self._on_stroke_begin)
         self._viewer.paint_stroke.connect(self._on_paint_stroke)
         self._viewer.stroke_end.connect(self._on_stroke_end)
@@ -487,7 +503,7 @@ class AnnotatorWindow(QMainWindow):
             f"  <span style='color:#c0c0e0'>{fn}</span>"
             f"<span style='color:#e05050'>{marker}</span>")
         self.setWindowTitle(
-            f"Tooth Annotator  —  {fn}{'  ●' if self._unsaved else ''}")
+            f"Mesh Annotator  —  {fn}{'  ●' if self._unsaved else ''}")
 
     def _update_nav_buttons(self):
         self._prev_btn.setEnabled(self._file_mgr.has_prev())
@@ -563,8 +579,8 @@ class AnnotatorWindow(QMainWindow):
                          radius: float, color_override: int):
         if not self._model.loaded:
             return
-        color = (PALETTE_RGB[color_override] if color_override >= 0
-                 else PALETTE_RGB[self._palette.current_index])
+        color = (_app_config.PALETTE_RGB[color_override] if color_override >= 0
+                 else _app_config.PALETTE_RGB[self._palette.current_index])
         xr, yr, r_buf = self._viewer.to_render_coords(x, y, radius)
         mask = self._viewer.compute_paint_mask(xr, yr, r_buf)
         if mask is None:
@@ -587,9 +603,95 @@ class AnnotatorWindow(QMainWindow):
         self._set_color(idx)
 
     def _set_color(self, idx: int):
-        idx = idx % len(PALETTE_RGB)
-        self._viewer.active_color = PALETTE_RGB[idx].copy()
+        pal = _app_config.PALETTE_RGB
+        if len(pal) == 0:
+            return
+        idx = idx % len(pal)
+        self._viewer.active_color = pal[idx].copy()
         self._palette.select_color(idx)
+
+    # ── Palette management ─────────────────────────────────────────────────────
+
+    def _switch_palette(self, name: str) -> None:
+        by_name = {p["name"]: p for p in self._cfg.get("palettes", [])}
+        if name not in by_name:
+            return
+        self._cfg["active_palette"] = name
+        _apply_palette(by_name[name]["colors"])
+        save_config(self._cfg)
+        self._palette.rebuild_swatches()
+        self._set_color(min(self._palette.current_index,
+                            len(_app_config.PALETTE_RGB) - 1))
+
+    def _new_palette(self) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        import copy
+        existing = {p["name"] for p in self._cfg.get("palettes", [])}
+        base, n  = "Palette", 2
+        suggested = base
+        while suggested in existing:
+            suggested = f"{base} {n}"
+            n += 1
+
+        name, ok = QInputDialog.getText(
+            self, "New Palette", "Palette name:", text=suggested)
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if name in existing:
+            QMessageBox.warning(self, "Duplicate Name",
+                                f'A palette named "{name}" already exists.')
+            return
+
+        active  = self._cfg.get("active_palette", "")
+        by_name = {p["name"]: p for p in self._cfg.get("palettes", [])}
+        src     = by_name.get(active, {}).get("colors", [])
+        new_colors = copy.deepcopy(src) if src else [
+            {"name": n, "rgb": list(map(int, r))}
+            for n, r in zip(_app_config.PALETTE_NAMES, _app_config.PALETTE_RGB)
+        ]
+
+        self._cfg["palettes"].append({"name": name, "colors": new_colors})
+        self._cfg["active_palette"] = name
+        _apply_palette(new_colors)
+        save_config(self._cfg)
+
+        palette_names = [p["name"] for p in self._cfg["palettes"]]
+        self._palette.set_palette_names(palette_names, name)
+        self._palette.rebuild_swatches()
+        self._edit_palette()
+
+    def _edit_palette(self) -> None:
+        active  = self._cfg.get("active_palette", "")
+        by_name = {p["name"]: p for p in self._cfg.get("palettes", [])}
+        if active not in by_name:
+            return
+        palette    = by_name[active]
+        other_names = {p["name"] for p in self._cfg["palettes"]} - {active}
+
+        dlg = PaletteEditorDialog(
+            palette["name"], palette["colors"], other_names, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_name, new_colors = dlg.result_data()
+        if not new_colors:
+            return
+
+        palette["name"]   = new_name
+        palette["colors"] = new_colors
+        self._cfg["active_palette"] = new_name
+
+        _apply_palette(new_colors)
+        save_config(self._cfg)
+
+        palette_names = [p["name"] for p in self._cfg["palettes"]]
+        self._palette.set_palette_names(palette_names, new_name)
+        self._palette.rebuild_swatches()
+        self._set_color(min(self._palette.current_index,
+                            len(_app_config.PALETTE_RGB) - 1))
 
     @pyqtSlot(int)
     def _on_brush_radius_changed(self, r: int):
