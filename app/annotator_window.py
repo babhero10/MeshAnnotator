@@ -11,10 +11,10 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QFileDialog,
-    QMessageBox, QSplitter, QDialog, QTextEdit,
+    QMessageBox, QSplitter, QDialog, QTextEdit, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtGui import QKeySequence, QShortcut, QAction
+from PyQt6.QtGui import QKeySequence, QShortcut, QAction, QColor, QPalette
 
 from app.viewer import ViewerWidget
 from app.palette_panel import PalettePanel
@@ -24,21 +24,62 @@ from app.config import PALETTE_RGB, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX, BRUSH_RA
 from utils.ply_io import read_ply, write_ply
 from utils.color_utils import snap_to_palette, colors_are_palette_exact
 
+# ── Shared button styles ──────────────────────────────────────────────────────
+_BTN = (
+    "QPushButton {"
+    "  background: #252535; color: #b8b8c8; border: 1px solid #35354a;"
+    "  border-radius: 4px; padding: 3px 10px; font-size: 11px; }"
+    "QPushButton:hover { background: #2e2e42; border-color: #5294e2; color: #d8d8f0; }"
+    "QPushButton:pressed { background: #1e1e2e; }"
+    "QPushButton:disabled { background: #1c1c26; color: #444455; border-color: #2a2a38; }"
+)
+_BTN_TOGGLE = (
+    _BTN +
+    "QPushButton:checked { background: #1e3255; border-color: #5294e2; color: #8ac0ff; }"
+    "QPushButton:checked:hover { background: #243a63; }"
+)
+_BTN_GROUP_LEFT = _BTN.replace("border-radius: 4px", "border-radius: 4px 0 0 4px")
+_BTN_GROUP_MID  = _BTN.replace("border-radius: 4px", "border-radius: 0").replace(
+    "border: 1px solid", "border-top: 1px solid; border-bottom: 1px solid;"
+    " border-right: 1px solid; border-left: none; border-color")
+_BTN_GROUP_RIGHT = _BTN.replace("border-radius: 4px", "border-radius: 0 4px 4px 0").replace(
+    "border: 1px solid", "border-top: 1px solid; border-bottom: 1px solid;"
+    " border-right: 1px solid; border-left: none; border-color")
 
-_BTN_STYLE = (
-    "QPushButton { background: #3a3a3a; color: #ccc; border: 1px solid #555;"
-    " border-radius: 3px; padding: 3px 10px; }"
-    "QPushButton:hover { background: #4a4a4a; }"
-    "QPushButton:pressed { background: #555; }"
+_TOPBAR_STYLE = (
+    "background: #141420;"
+    "border-bottom: 1px solid #252538;"
+)
+
+_WINDOW_STYLE = "background-color: #0f0f18; color: #d0d0e0;"
+
+_MENU_STYLE = (
+    "QMenuBar { background: #141420; color: #a0a0b8; font-size: 11px;"
+    "  border-bottom: 1px solid #252538; }"
+    "QMenuBar::item { padding: 4px 10px; }"
+    "QMenuBar::item:selected { background: #252538; color: #d0d0e8; }"
+    "QMenu { background: #1a1a2a; color: #c0c0d8; border: 1px solid #303048;"
+    "  padding: 4px 0; }"
+    "QMenu::item { padding: 5px 28px 5px 16px; }"
+    "QMenu::item:selected { background: #253560; color: #e0e0f8; }"
+    "QMenu::separator { height: 1px; background: #282840; margin: 3px 8px; }"
+)
+
+_STATUS_STYLE = (
+    "QStatusBar { background: #141420; color: #505068; font-size: 11px;"
+    "  border-top: 1px solid #252538; }"
+    "QStatusBar::item { border: none; }"
 )
 
 
 class ShortcutHelpDialog(QDialog):
     _TEXT = """<style>
-    body { color: #ccc; font-family: monospace; font-size: 12px; }
-    b    { color: #fff; }
-    h3   { color: #aaa; margin-bottom: 4px; }
-    td   { padding: 2px 12px 2px 0; }
+    body { color: #c0c0d8; font-family: monospace; font-size: 12px;
+           background: #141420; }
+    b    { color: #8ac0ff; }
+    h3   { color: #5294e2; margin-bottom: 4px; margin-top: 12px;
+           font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+    td   { padding: 3px 14px 3px 0; }
     </style>
     <body>
     <h3>Navigation</h3>
@@ -48,7 +89,7 @@ class ShortcutHelpDialog(QDialog):
       <tr><td><b>Ctrl + Middle-drag</b></td><td>Zoom</td></tr>
       <tr><td><b>Scroll wheel</b></td><td>Zoom</td></tr>
       <tr><td><b>F</b></td><td>Frame mesh</td></tr>
-      <tr><td><b>Numpad 1 / 3 / 7 / 0</b></td><td>Front / Right / Top / Reset view</td></tr>
+      <tr><td><b>Numpad 1 / 3 / 7 / 0</b></td><td>Front / Right / Top / Reset</td></tr>
     </table>
     <h3>Annotation</h3>
     <table>
@@ -73,33 +114,43 @@ class ShortcutHelpDialog(QDialog):
       <tr><td><b>Barrel + Shift</b></td><td>Pan</td></tr>
       <tr><td><b>Barrel + Ctrl</b></td><td>Zoom</td></tr>
     </table>
-    <p style="color:#666; font-size:10px;">Works with both RightButton and MiddleButton barrel mappings.</p>
+    <p style="color:#404055; font-size:10px; margin-top:10px;">
+      Works with both RightButton and MiddleButton barrel mappings.</p>
     </body>"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
         self.setWindowModality(Qt.WindowModality.NonModal)
-        self.resize(440, 500)
-        self.setStyleSheet("background: #1e1e1e;")
+        self.resize(460, 520)
+        self.setStyleSheet("background: #141420;")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
         txt = QTextEdit()
         txt.setReadOnly(True)
         txt.setHtml(self._TEXT)
-        txt.setStyleSheet("background: #1e1e1e; border: none;")
+        txt.setStyleSheet(
+            "background: #141420; border: 1px solid #252538; border-radius: 4px;")
         layout.addWidget(txt)
+
         close = QPushButton("Close")
-        close.setStyleSheet(_BTN_STYLE)
+        close.setStyleSheet(_BTN)
+        close.setFixedWidth(80)
         close.clicked.connect(self.close)
-        layout.addWidget(close)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(close)
+        layout.addLayout(row)
 
 
 class AnnotatorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Tooth Annotator")
-        self.resize(1280, 820)
-        self.setStyleSheet("background-color: #1e1e1e; color: #ddd;")
+        self.resize(1300, 840)
+        self.setStyleSheet(_WINDOW_STYLE)
 
         self._cfg      = load_config()
         self._file_mgr = FileManager()
@@ -125,9 +176,7 @@ class AnnotatorWindow(QMainWindow):
     def viewer(self) -> ViewerWidget:
         return self._viewer
 
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
+    # ── UI construction ────────────────────────────────────────────────────
 
     def _build_ui(self):
         central = QWidget()
@@ -136,87 +185,101 @@ class AnnotatorWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Top bar
-        topbar = QWidget()
-        topbar.setFixedHeight(40)
-        topbar.setStyleSheet("background: #252525; border-bottom: 1px solid #383838;")
-        tb = QHBoxLayout(topbar)
-        tb.setContentsMargins(12, 4, 12, 4)
-        tb.setSpacing(6)
-
-        self._file_label = QLabel("No file loaded")
-        self._file_label.setStyleSheet("color: #bbb; font-size: 12px;")
-        tb.addWidget(self._file_label)
-        tb.addStretch()
-
-        for label, view in [("Front", "front"), ("Right", "right"),
-                             ("Top", "top"), ("⟳ Reset", "reset")]:
-            btn = QPushButton(label)
-            btn.setStyleSheet(_BTN_STYLE)
-            btn.setFixedWidth(54 if label != "⟳ Reset" else 62)
-            btn.clicked.connect(lambda _, v=view: self._viewer.set_view(v))
-            tb.addWidget(btn)
-
-        tb.addSpacing(8)
-
-        self._wire_btn = QPushButton("Wireframe")
-        self._wire_btn.setCheckable(True)
-        self._wire_btn.setStyleSheet(
-            "QPushButton { background: #3a3a3a; color: #ccc; border: 1px solid #555;"
-            " border-radius: 3px; padding: 3px 10px; }"
-            "QPushButton:hover { background: #4a4a4a; }"
-            "QPushButton:checked { background: #4a6080; border-color: #6090b0; }"
-        )
-        tb.addWidget(self._wire_btn)
-
-        tb.addSpacing(8)
-        self._prev_btn = QPushButton("◀")
-        self._next_btn = QPushButton("▶")
-        _BTN_DIS = (_BTN_STYLE +
-                    "QPushButton:disabled { background: #2a2a2a; color: #555;"
-                    " border-color: #333; }")
-        for btn in (self._prev_btn, self._next_btn):
-            btn.setStyleSheet(_BTN_DIS)
-            btn.setFixedWidth(32)
-            btn.setEnabled(False)
-        tb.addWidget(self._prev_btn)
-        tb.addWidget(self._next_btn)
-        root.addWidget(topbar)
+        root.addWidget(self._build_topbar())
 
         # Main area
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setStyleSheet("QSplitter::handle { background: #383838; width: 2px; }")
+        splitter.setStyleSheet(
+            "QSplitter::handle { background: #252538; width: 2px; }"
+            "QSplitter::handle:hover { background: #5294e2; }"
+        )
 
         self._viewer = ViewerWidget()
         splitter.addWidget(self._viewer)
 
         self._palette = PalettePanel()
         splitter.addWidget(self._palette)
-        splitter.setSizes([1060, 200])
+        splitter.setSizes([1070, 210])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         root.addWidget(splitter, stretch=1)
 
         # Status bar
         self._status = QStatusBar()
-        self._status.setStyleSheet(
-            "QStatusBar { background: #252525; color: #777; font-size: 11px; }"
-            "QStatusBar::item { border: none; }"
-        )
+        self._status.setStyleSheet(_STATUS_STYLE)
         self.setStatusBar(self._status)
+
         self._tablet_label = QLabel("  Mouse")
-        self._tablet_label.setStyleSheet("color: #555; font-size: 10px;")
+        self._tablet_label.setStyleSheet("color: #404055; font-size: 10px;")
         self._status.addPermanentWidget(self._tablet_label)
         self._status.showMessage("Ready — open a folder to begin")
 
+    def _build_topbar(self) -> QWidget:
+        topbar = QWidget()
+        topbar.setFixedHeight(44)
+        topbar.setStyleSheet(_TOPBAR_STYLE)
+        tb = QHBoxLayout(topbar)
+        tb.setContentsMargins(12, 6, 12, 6)
+        tb.setSpacing(6)
+
+        # File label (left)
+        self._file_label = QLabel("No file loaded")
+        self._file_label.setStyleSheet(
+            "color: #7878a0; font-size: 11px; padding: 0 4px;")
+        tb.addWidget(self._file_label)
+        tb.addStretch()
+
+        # View preset button group (center-right)
+        views = [("Front", "front"), ("Right", "right"),
+                 ("Top", "top"), ("↺ Reset", "reset")]
+        for i, (label, view) in enumerate(views):
+            btn = QPushButton(label)
+            btn.setFixedWidth(54 if label != "↺ Reset" else 62)
+            btn.setStyleSheet(_BTN)
+            btn.clicked.connect(lambda _, v=view: self._viewer.set_view(v))
+            tb.addWidget(btn)
+
+        tb.addSpacing(8)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setStyleSheet("color: #252538;")
+        tb.addWidget(sep)
+
+        tb.addSpacing(8)
+
+        # Wireframe toggle
+        self._wire_btn = QPushButton("Wireframe")
+        self._wire_btn.setCheckable(True)
+        self._wire_btn.setStyleSheet(_BTN_TOGGLE)
+        tb.addWidget(self._wire_btn)
+
+        tb.addSpacing(8)
+
+        # Separator
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.VLine)
+        sep2.setStyleSheet("color: #252538;")
+        tb.addWidget(sep2)
+
+        tb.addSpacing(8)
+
+        # Navigation buttons
+        self._prev_btn = QPushButton("◀")
+        self._next_btn = QPushButton("▶")
+        for btn in (self._prev_btn, self._next_btn):
+            btn.setStyleSheet(_BTN)
+            btn.setFixedWidth(32)
+            btn.setEnabled(False)
+        tb.addWidget(self._prev_btn)
+        tb.addWidget(self._next_btn)
+
+        return topbar
+
     def _build_menu(self):
         mb = self.menuBar()
-        mb.setStyleSheet(
-            "QMenuBar { background: #252525; color: #ccc; }"
-            "QMenuBar::item:selected { background: #3a3a3a; }"
-            "QMenu { background: #2a2a2a; color: #ccc; border: 1px solid #444; }"
-            "QMenu::item:selected { background: #3a5a7a; }"
-        )
+        mb.setStyleSheet(_MENU_STYLE)
 
         file_menu = mb.addMenu("File")
         self._add_action(file_menu, "Open Folder…", self._pick_folder, "Ctrl+O")
@@ -244,7 +307,7 @@ class AnnotatorWindow(QMainWindow):
         help_menu = mb.addMenu("Help")
         self._add_action(help_menu, "Keyboard Shortcuts", self._show_shortcuts, "F1")
 
-    def _add_action(self, menu: QMenu, label: str, slot, shortcut: str = "") -> QAction:
+    def _add_action(self, menu, label: str, slot, shortcut: str = "") -> QAction:
         act = QAction(label, self)
         if shortcut:
             act.setShortcut(QKeySequence(shortcut))
@@ -294,9 +357,7 @@ class AnnotatorWindow(QMainWindow):
 
         super().keyPressEvent(e)
 
-    # ------------------------------------------------------------------
-    # Folder / file loading
-    # ------------------------------------------------------------------
+    # ── Folder / file loading ──────────────────────────────────────────────
 
     def _pick_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open PLY Folder")
@@ -336,23 +397,25 @@ class AnnotatorWindow(QMainWindow):
         self._update_title()
         self._update_nav_buttons()
         self._status.showMessage(
-            f"Loaded {self._file_mgr.current_filename} — {len(verts):,} vertices")
+            f"Loaded  {self._file_mgr.current_filename}  —  {len(verts):,} vertices")
 
     def _update_title(self):
         fn     = self._file_mgr.current_filename
         idx    = self._file_mgr.current_index + 1
         total  = self._file_mgr.count
-        marker = " *" if self._unsaved else ""
-        self._file_label.setText(f"File {idx} / {total} — {fn}{marker}")
-        self.setWindowTitle(f"Tooth Annotator — {fn}{marker}")
+        marker = "  ●" if self._unsaved else ""
+        self._file_label.setText(
+            f"<span style='color:#404060'>{idx} / {total}</span>"
+            f"  <span style='color:#9090b8'>{fn}</span>"
+            f"<span style='color:#e05050'>{marker}</span>")
+        self.setWindowTitle(
+            f"Tooth Annotator  —  {fn}{'  ●' if self._unsaved else ''}")
 
     def _update_nav_buttons(self):
         self._prev_btn.setEnabled(self._file_mgr.has_prev())
         self._next_btn.setEnabled(self._file_mgr.has_next())
 
-    # ------------------------------------------------------------------
-    # Navigation
-    # ------------------------------------------------------------------
+    # ── Navigation ─────────────────────────────────────────────────────────
 
     def _go_next(self):
         if not self._file_mgr.has_next():
@@ -390,9 +453,7 @@ class AnnotatorWindow(QMainWindow):
                 return False
         return True
 
-    # ------------------------------------------------------------------
-    # Painting
-    # ------------------------------------------------------------------
+    # ── Painting ───────────────────────────────────────────────────────────
 
     @pyqtSlot()
     def _on_stroke_begin(self):
@@ -420,9 +481,7 @@ class AnnotatorWindow(QMainWindow):
     def _on_stroke_end(self):
         pass
 
-    # ------------------------------------------------------------------
-    # Palette / brush
-    # ------------------------------------------------------------------
+    # ── Palette / brush ────────────────────────────────────────────────────
 
     @pyqtSlot(int)
     def _on_palette_color_selected(self, idx: int):
@@ -455,9 +514,7 @@ class AnnotatorWindow(QMainWindow):
         self._cfg["brush_radius"] = r
         save_config(self._cfg)
 
-    # ------------------------------------------------------------------
-    # Undo / Redo
-    # ------------------------------------------------------------------
+    # ── Undo / Redo ────────────────────────────────────────────────────────
 
     def _undo(self):
         if self._model.undo():
@@ -471,9 +528,7 @@ class AnnotatorWindow(QMainWindow):
             self._unsaved = True
             self._update_title()
 
-    # ------------------------------------------------------------------
-    # Save
-    # ------------------------------------------------------------------
+    # ── Save ───────────────────────────────────────────────────────────────
 
     def _save_current(self) -> bool:
         if not self._model.loaded:
@@ -486,41 +541,35 @@ class AnnotatorWindow(QMainWindow):
             QMessageBox.critical(self, "Save Error", str(ex))
             return False
 
-        bad = (~colors_are_palette_exact(self._model.colors)).sum()
-        n   = len(self._model.colors)
+        bad    = (~colors_are_palette_exact(self._model.colors)).sum()
+        n      = len(self._model.colors)
         n_cols = len({tuple(c) for c in self._model.colors.tolist()})
         if bad:
             self._status.showMessage(
-                f"Saved {self._file_mgr.current_filename} — "
-                f"⚠ {bad} non-palette vertex/vertices")
+                f"Saved  {self._file_mgr.current_filename}"
+                f"  —  ⚠ {bad} non-palette vertex/vertices")
         else:
             self._status.showMessage(
-                f"Saved {self._file_mgr.current_filename} — "
-                f"{n:,} vertices, {n_cols} colors")
+                f"Saved  {self._file_mgr.current_filename}"
+                f"  —  {n:,} vertices · {n_cols} colors")
 
         self._unsaved = False
         self._update_title()
         return True
 
-    # ------------------------------------------------------------------
-    # Wireframe
-    # ------------------------------------------------------------------
+    # ── Wireframe ──────────────────────────────────────────────────────────
 
     def _toggle_wireframe(self):
         self._viewer.toggle_wireframe()
         self._wire_btn.setChecked(not self._wire_btn.isChecked())
 
-    # ------------------------------------------------------------------
-    # Help
-    # ------------------------------------------------------------------
+    # ── Help ───────────────────────────────────────────────────────────────
 
     def _show_shortcuts(self):
         dlg = ShortcutHelpDialog(self)
         dlg.show()
 
-    # ------------------------------------------------------------------
-    # Close
-    # ------------------------------------------------------------------
+    # ── Close ──────────────────────────────────────────────────────────────
 
     def closeEvent(self, e):
         if self._unsaved:

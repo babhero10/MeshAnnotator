@@ -1,25 +1,36 @@
 """
 PalettePanel — sidebar showing color swatches, brush size slider, and save button.
 
-ColorSwatch caches QFont and QPen objects to avoid per-frame allocations.
-Exposes current_index so AnnotatorWindow can read the active color without
-maintaining a separate Brush object.
+Redesigned with modern Qt6 aesthetics: per-color tinted selection, hover states,
+rounded swatches, brush circle preview, and a cleaner visual hierarchy.
 """
 from __future__ import annotations
 
+import math
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
     QSlider, QSizePolicy, QFrame, QApplication,
 )
-from PyQt6.QtCore import Qt, QEvent, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QFont, QMouseEvent, QTabletEvent
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRect, QRectF, pyqtSignal
+from PyQt6.QtGui import (
+    QColor, QPainter, QBrush, QPen, QFont, QFontMetrics,
+    QMouseEvent, QTabletEvent, QLinearGradient, QPainterPath,
+)
 
 from app.config import (PALETTE_NAMES, PALETTE_RGB,
                         DEFAULT_BRUSH_RADIUS, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX)
 
+# ── shared palette ────────────────────────────────────────────────────────────
+_ACCENT      = QColor("#5294e2")
+_BG_HOVER    = QColor(255, 255, 255, 14)
+_BORDER_IDLE = QColor(45, 45, 55)
+_TEXT_DIM    = QColor(130, 130, 140)
+_TEXT_BRIGHT = QColor(230, 230, 235)
+_KEY_BADGE   = QColor(48, 48, 58)
+
 
 class BrushSlider(QSlider):
-    """QSlider with a pointing-hand cursor on hover and a closed-hand while dragging."""
+    """QSlider with pointer cursor and drag-hand feedback."""
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
@@ -34,75 +45,166 @@ class BrushSlider(QSlider):
         super().mouseReleaseEvent(e)
 
 
+class BrushPreview(QWidget):
+    """Small widget that draws a circle proportional to the current brush radius."""
+
+    def __init__(self, radius: int, parent=None):
+        super().__init__(parent)
+        self._radius = radius
+        self.setFixedHeight(60)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_radius(self, r: int):
+        self._radius = r
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy = self.width() // 2, self.height() // 2
+        max_r  = min(cx, cy) - 2
+        # Map brush range to display circle (min → 3 px, max → max_r)
+        display_r = max(3, int(self._radius / BRUSH_RADIUS_MAX * max_r))
+        # Soft glow ring
+        glow = QColor(82, 148, 226, 40)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(glow))
+        p.drawEllipse(cx - display_r - 3, cy - display_r - 3,
+                      (display_r + 3) * 2, (display_r + 3) * 2)
+        # Main circle
+        p.setPen(QPen(_ACCENT, 1.5))
+        p.setBrush(QBrush(QColor(82, 148, 226, 55)))
+        p.drawEllipse(cx - display_r, cy - display_r,
+                      display_r * 2, display_r * 2)
+        # Center dot
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(_ACCENT))
+        p.drawEllipse(cx - 2, cy - 2, 4, 4)
+
+
 class ColorSwatch(QWidget):
     clicked = pyqtSignal(int)
 
-    _font:     QFont | None = None
-    _pen_sel:  QPen  | None = None
-    _pen_norm: QPen  | None = None
-    _pen_text: QPen  | None = None
-    _pen_hint: QPen  | None = None
-    _pen_gold: QPen  | None = None
+    _font_name:  QFont | None = None
+    _font_bold:  QFont | None = None
+    _font_key:   QFont | None = None
 
     @classmethod
-    def _init_shared(cls):
-        if cls._font is not None:
+    def _init_fonts(cls):
+        if cls._font_name is not None:
             return
-        cls._font     = QFont(); cls._font.setPointSize(9)
-        cls._pen_sel  = QPen(QColor(255, 255, 255), 2)
-        cls._pen_norm = QPen(QColor(80, 80, 80), 1)
-        cls._pen_text = QPen(QColor(220, 220, 220))
-        cls._pen_hint = QPen(QColor(140, 140, 140))
-        cls._pen_gold = QPen(QColor(255, 200, 0), 2)
+        cls._font_name = QFont()
+        cls._font_name.setPointSize(9)
+        cls._font_bold = QFont()
+        cls._font_bold.setPointSize(9)
+        cls._font_bold.setWeight(QFont.Weight.DemiBold)
+        cls._font_key = QFont()
+        cls._font_key.setPointSize(8)
 
     def __init__(self, index: int, name: str, rgb: tuple,
                  key_hint: str, parent=None):
         super().__init__(parent)
-        ColorSwatch._init_shared()
+        ColorSwatch._init_fonts()
         self.index    = index
         self.name     = name
         self.rgb      = rgb
         self.key_hint = key_hint
         self._selected = False
-        self._brush    = QBrush(QColor(*rgb))
-        self.setFixedHeight(34)
+        self._hover    = False
+
+        # precompute color variants
+        self._color        = QColor(*rgb)
+        self._color_light  = self._color.lighter(130)
+        self._color_faint  = QColor(rgb[0], rgb[1], rgb[2], 28)
+        self._brush        = QBrush(self._color)
+
+        self.setFixedHeight(36)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setToolTip(f"{name}  #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
 
     def set_selected(self, val: bool):
         if self._selected != val:
             self._selected = val
             self.update()
 
-    def paintEvent(self, event):
+    def enterEvent(self, _event):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, _event):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r   = self.rect().adjusted(2, 2, -2, -2)
-        box = r.adjusted(0, 0, -r.width() + 28, 0)
+        w, h = self.width(), self.height()
+        r    = QRectF(1, 1, w - 2, h - 2)
 
-        p.setBrush(self._brush)
-        p.setPen(self._pen_sel if self._selected else self._pen_norm)
-        p.drawRect(box)
-
-        p.setFont(self._font)
-        p.setPen(self._pen_text)
-        p.drawText(r.adjusted(34, 0, -28, 0),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.name)
-
-        p.setPen(self._pen_hint)
-        p.drawText(r.adjusted(r.width() - 24, 0, 0, 0),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                   f"[{self.key_hint}]")
-
+        # ── Background ────────────────────────────────────────────────────
+        p.setPen(Qt.PenStyle.NoPen)
         if self._selected:
-            p.setPen(self._pen_gold)
+            p.setBrush(QBrush(self._color_faint))
+            p.drawRoundedRect(r, 5, 5)
+        elif self._hover:
+            p.setBrush(QBrush(_BG_HOVER))
+            p.drawRoundedRect(r, 5, 5)
+
+        # ── Color box ─────────────────────────────────────────────────────
+        box = QRectF(8, 7, 26, h - 14)
+        p.setBrush(self._brush)
+        p.setPen(QPen(self._color_light if self._selected else _BORDER_IDLE, 1))
+        p.drawRoundedRect(box, 4, 4)
+
+        # ── Label ─────────────────────────────────────────────────────────
+        p.setFont(self._font_bold if self._selected else self._font_name)
+        p.setPen(QPen(_TEXT_BRIGHT if self._selected else _TEXT_DIM))
+        label_r = QRectF(42, 0, w - 70, h)
+        p.drawText(label_r,
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   self.name)
+
+        # ── Key badge ─────────────────────────────────────────────────────
+        badge_w, badge_h = 20, 16
+        badge_x = w - badge_w - 6
+        badge_y = (h - badge_h) // 2
+        badge_r = QRectF(badge_x, badge_y, badge_w, badge_h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(_KEY_BADGE))
+        p.drawRoundedRect(badge_r, 3, 3)
+        p.setFont(self._font_key)
+        p.setPen(QPen(QColor(90, 90, 100)))
+        p.drawText(badge_r, Qt.AlignmentFlag.AlignCenter, self.key_hint)
+
+        # ── Selection border ──────────────────────────────────────────────
+        if self._selected:
+            p.setPen(QPen(self._color_light, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(self.rect().adjusted(1, 1, -1, -1))
+            p.drawRoundedRect(r, 5, 5)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.index)
+
+
+class _SectionLabel(QLabel):
+    """Compact uppercase section header."""
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            "color: #505060; font-weight: bold; font-size: 9px;"
+            " letter-spacing: 2px; padding: 0px;")
+
+
+class _Divider(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.HLine)
+        self.setStyleSheet("color: #2a2a38;")
+        self.setFixedHeight(1)
 
 
 class PalettePanel(QWidget):
@@ -112,7 +214,7 @@ class PalettePanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(200)
+        self.setFixedWidth(210)
         self._swatches:      list[ColorSwatch] = []
         self._current_index: int = 0
         self._tablet_child:  QWidget | None = None
@@ -123,16 +225,13 @@ class PalettePanel(QWidget):
         return self._current_index
 
     def _build_ui(self):
+        self.setStyleSheet("background: #181820;")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 10, 8, 10)
-        layout.setSpacing(2)
+        layout.setContentsMargins(8, 12, 8, 10)
+        layout.setSpacing(3)
 
-        title = QLabel("PALETTE")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(
-            "color: #888; font-weight: bold; font-size: 10px; letter-spacing: 1px;")
-        layout.addWidget(title)
-
+        # ── Colors section ────────────────────────────────────────────────
+        layout.addWidget(_SectionLabel("COLORS"))
         layout.addSpacing(4)
 
         key_hints = [str(i) for i in range(1, 10)] + ["0"]
@@ -143,68 +242,76 @@ class PalettePanel(QWidget):
             layout.addWidget(swatch)
             self._swatches.append(swatch)
 
-        layout.addSpacing(12)
+        layout.addSpacing(10)
+        layout.addWidget(_Divider())
+        layout.addSpacing(6)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #3a3a3a;")
-        layout.addWidget(sep)
-
+        # ── Brush section ─────────────────────────────────────────────────
+        layout.addWidget(_SectionLabel("BRUSH SIZE"))
         layout.addSpacing(4)
 
-        brush_label = QLabel("Brush Size")
-        brush_label.setStyleSheet("color: #888; font-size: 10px;")
-        brush_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(brush_label)
+        self._brush_preview = BrushPreview(DEFAULT_BRUSH_RADIUS)
+        layout.addWidget(self._brush_preview)
 
         self._brush_slider = BrushSlider(Qt.Orientation.Horizontal)
         self._brush_slider.setMinimum(BRUSH_RADIUS_MIN)
         self._brush_slider.setMaximum(BRUSH_RADIUS_MAX)
         self._brush_slider.setValue(DEFAULT_BRUSH_RADIUS)
         self._brush_slider.setStyleSheet(
-            "QSlider::groove:horizontal { background: #3a3a3a; height: 4px; border-radius: 2px; }"
-            "QSlider::handle:horizontal { background: #6090c0; width: 14px; height: 14px;"
-            " margin: -5px 0; border-radius: 7px; }"
-            "QSlider::sub-page:horizontal { background: #4a7aaa; border-radius: 2px; }"
+            "QSlider::groove:horizontal {"
+            "  background: #2a2a38; height: 4px; border-radius: 2px; }"
+            "QSlider::handle:horizontal {"
+            "  background: #5294e2; width: 14px; height: 14px;"
+            "  margin: -5px 0; border-radius: 7px; border: 2px solid #6aaaf8; }"
+            "QSlider::sub-page:horizontal {"
+            "  background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "    stop:0 #2a5a9a, stop:1 #5294e2);"
+            "  border-radius: 2px; }"
         )
-        self._brush_slider.valueChanged.connect(self.brush_radius_changed)
+        self._brush_slider.valueChanged.connect(self._on_slider_changed)
         layout.addWidget(self._brush_slider)
 
         self._brush_value_label = QLabel(f"{DEFAULT_BRUSH_RADIUS} px")
         self._brush_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._brush_value_label.setStyleSheet("color: #888; font-size: 9px;")
+        self._brush_value_label.setStyleSheet(
+            "color: #5294e2; font-size: 10px; font-weight: bold;")
         layout.addWidget(self._brush_value_label)
-        self._brush_slider.valueChanged.connect(
-            lambda v: self._brush_value_label.setText(f"{v} px"))
 
         layout.addStretch()
+        layout.addWidget(_Divider())
+        layout.addSpacing(8)
 
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("color: #3a3a3a;")
-        layout.addWidget(sep2)
-
-        layout.addSpacing(6)
-
-        save_btn = QPushButton("Save  Ctrl+S")
+        # ── Save button ───────────────────────────────────────────────────
+        save_btn = QPushButton("  Save")
         save_btn.setStyleSheet(
-            "QPushButton { background: #2a6a3a; color: #ddd; border: 1px solid #3a8a4a;"
-            " border-radius: 4px; padding: 7px; font-size: 12px; }"
-            "QPushButton:hover { background: #3a7a4a; }"
-            "QPushButton:pressed { background: #1e5a2e; }"
+            "QPushButton {"
+            "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "    stop:0 #2e7a4a, stop:1 #1e5a36);"
+            "  color: #c8f0d8; border: 1px solid #3a9a5a;"
+            "  border-radius: 5px; padding: 8px 0; font-size: 12px;"
+            "  font-weight: bold; letter-spacing: 1px; }"
+            "QPushButton:hover {"
+            "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "    stop:0 #3a9a5a, stop:1 #2a7044); }"
+            "QPushButton:pressed {"
+            "  background: #1a4a2e; border-color: #2a7a44; }"
         )
         save_btn.clicked.connect(self.save_requested)
         layout.addWidget(save_btn)
 
+        hint = QLabel("Ctrl+S")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet("color: #404050; font-size: 9px;")
+        layout.addWidget(hint)
+
         self.select_color(0)
 
-    def tabletEvent(self, event: QTabletEvent):
-        """Convert tablet events to correctly-positioned mouse events.
+    def _on_slider_changed(self, v: int):
+        self._brush_preview.set_radius(v)
+        self._brush_value_label.setText(f"{v} px")
+        self.brush_radius_changed.emit(v)
 
-        Child widgets don't handle tabletEvent so Qt propagates it here.
-        We use globalPosition() (always correct) instead of position()
-        and re-deliver a synthetic QMouseEvent to the right child.
-        """
+    def tabletEvent(self, event: QTabletEvent):
         local = self.mapFromGlobal(event.globalPosition().toPoint())
         t     = event.type()
 
@@ -258,4 +365,5 @@ class PalettePanel(QWidget):
         self._brush_slider.blockSignals(True)
         self._brush_slider.setValue(radius)
         self._brush_slider.blockSignals(False)
+        self._brush_preview.set_radius(radius)
         self._brush_value_label.setText(f"{radius} px")
