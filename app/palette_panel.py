@@ -323,7 +323,10 @@ class PalettePanel(QWidget):
         elif t == QEvent.Type.TabletMove:
             mtype = QEvent.Type.MouseMove
             btn   = Qt.MouseButton.NoButton
-            btns  = (Qt.MouseButton.LeftButton if event.pressure() > 0.05
+            # Only report button held if a press was already tracked; otherwise
+            # hover pressure leaks into the slider and makes it jump mid-stroke.
+            btns  = (Qt.MouseButton.LeftButton
+                     if self._tablet_child is not None and event.pressure() > 0.05
                      else Qt.MouseButton.NoButton)
         elif t == QEvent.Type.TabletRelease:
             mtype = QEvent.Type.MouseButtonRelease
