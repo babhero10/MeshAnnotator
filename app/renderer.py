@@ -37,26 +37,24 @@ class MeshRenderer:
         # Blender solid viewport background grey
         s.set_background([0.22, 0.22, 0.22, 1.0])
 
-        # 3-point studio setup — mimics Blender Solid default
-        # Key: upper-left-front, warm white, casts shadows
+        # 3-point studio setup — mimics Blender Solid default.
+        # Intensities are kept moderate; the fully-matte material (roughness=1)
+        # means there are no specular hotspots to blow out colors.
+        # Key: upper-left-front, slightly warm, casts shadows
         s.scene.add_directional_light(
-            "key",    [-0.6, -1.0, -0.75], [1.0, 0.97, 0.93], 75000, True)
-        # Fill: right side, cool blue, softens key shadows
+            "key",  [-0.6, -1.0, -0.75], [1.0, 0.97, 0.93], 45000, True)
+        # Fill: right side, cool, softens key shadows without doubling brightness
         s.scene.add_directional_light(
-            "fill",   [ 1.0,  0.3, -0.30], [0.70, 0.82, 1.0], 28000, False)
-        # Rim: back-top, separates mesh from background
+            "fill", [ 1.0,  0.3, -0.30], [0.72, 0.82, 1.0],  16000, False)
+        # Rim: from behind, separates mesh silhouette from background
         s.scene.add_directional_light(
-            "rim",    [ 0.2,  0.9,  0.50], [0.55, 0.62, 0.80], 22000, False)
-        # Bottom: prevents pitch-black undersides
-        s.scene.add_directional_light(
-            "bottom", [ 0.0,  1.0,  0.10], [0.40, 0.45, 0.55], 10000, False)
+            "rim",  [ 0.2,  0.9,  0.50], [0.55, 0.62, 0.80], 14000, False)
 
-        # Strong indirect (IBL) — the main reason Blender Solid never looks harsh
-        s.scene.set_indirect_light_intensity(60000)
+        # Moderate IBL — enough to fill dark faces without washing out colors
+        s.scene.set_indirect_light_intensity(18000)
 
-        # SSAO adds depth cues in crevices (cavity shading in Blender terms)
+        # SSAO for cavity/crevice depth cues (Blender's "Cavity" option)
         s.view.set_ambient_occlusion(True)
-        # Filament tone-mapping and anti-aliasing
         s.view.set_post_processing(True)
 
     def resize(self, width: int, height: int) -> bool:
@@ -80,8 +78,8 @@ class MeshRenderer:
         m = rendering.MaterialRecord()
         m.shader           = "defaultLit"
         m.base_color       = [1.0, 1.0, 1.0, 1.0]
-        m.base_roughness   = 0.5   # medium — shows curvature without glare
-        m.base_reflectance = 0.04  # subtle specular, like Blender solid (non-metallic)
+        m.base_roughness   = 1.0  # fully Lambertian — zero specular, colors stay saturated
+        m.base_reflectance = 0.0  # no specular at all, exactly like Blender solid clay look
         m.base_metallic    = 0.0
         return m
 
