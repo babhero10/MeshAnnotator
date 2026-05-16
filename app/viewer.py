@@ -13,9 +13,9 @@ import time
 import numpy as np
 import open3d as o3d
 
-from PyQt5.QtWidgets import QWidget, QSizePolicy, QApplication
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QTimer
-from PyQt5.QtGui import QImage, QPainter, QPen, QColor, QTabletEvent
+from PyQt6.QtWidgets import QWidget, QSizePolicy, QApplication
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer
+from PyQt6.QtGui import QImage, QPainter, QPen, QColor, QTabletEvent
 
 from app.camera import ArcballCamera
 from app.renderer import MeshRenderer
@@ -41,15 +41,12 @@ class ViewerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
-        self.setCursor(Qt.BlankCursor)
-        # WA_TabletTracking: deliver TabletMove events even when the pen is hovering
-        # (not touching). Without this the brush cursor only appears after first contact.
-        self.setAttribute(Qt.WA_TabletTracking, True)
-        # WA_AcceptTouchEvents intentionally omitted — interferes with tablet events
+        self.setCursor(Qt.CursorShape.BlankCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_TabletTracking, True)
 
         self._renderer = MeshRenderer(max(self.width(), 16), max(self.height(), 16))
         self._input    = InputHandler(brush_radius=15, parent=self)
@@ -60,29 +57,23 @@ class ViewerWidget(QWidget):
         self._nav_active     = False
         self._nav_mode       = NavMode.ROTATE
         self._verts_np:       np.ndarray | None = None
-        self._verts_normals:  np.ndarray | None = None  # Nx3 unit normals (fallback only)
-        self._verts_2d:       np.ndarray | None = None  # render-buffer pixel coords Nx2
-        self._verts_vs_depth: np.ndarray | None = None  # view-space depth per vertex N
-        self._depth_buf_vs:   np.ndarray | None = None  # rendered view-space depth HxW
-        self._mesh_tol:       float = 1.0               # world-unit depth tolerance
-        self._wire_edges:    np.ndarray | None = None  # all mesh edges Mx2
+        self._verts_normals:  np.ndarray | None = None
+        self._verts_2d:       np.ndarray | None = None
+        self._verts_vs_depth: np.ndarray | None = None
+        self._depth_buf_vs:   np.ndarray | None = None
+        self._mesh_tol:       float = 1.0
+        self._wire_edges:    np.ndarray | None = None
         self._proj_dirty     = True
         self._show_wireframe = False
 
         self._mouse_pos:       QPoint | None = None
         self._cursor_hidden:   bool = False
-        # Auto-restore the OS cursor 150 ms after the last event in this widget.
-        # leaveEvent is unreliable on Linux tablets (X11 pointer ≠ pen position),
-        # so we use a timer as the fallback to un-hide the cursor when the pen
-        # moves to the palette or is lifted off the tablet.
         self._cursor_timer = QTimer(self)
         self._cursor_timer.setSingleShot(True)
         self._cursor_timer.setInterval(150)
         self._cursor_timer.timeout.connect(self.restore_cursor)
         self._cached_qimage:  QImage | None = None
         self._last_render_t   = 0.0
-        # Pending color array: defers GPU upload to render time.
-        # update_colors() stores the array here; _do_render() uploads it once per frame.
         self._pending_colors: np.ndarray | None = None
 
         self._brush_radius = 15
@@ -155,33 +146,21 @@ class ViewerWidget(QWidget):
         self._depth_buf_vs   = None
         self._proj_dirty     = True
         self._wire_edges      = _all_mesh_edges(faces)
-        self._pending_colors  = None  # clear any leftover pending from previous mesh
+        self._pending_colors  = None
 
         bbox = mesh.get_axis_aligned_bounding_box()
         diag = np.linalg.norm(
             np.asarray(bbox.get_max_bound()) - np.asarray(bbox.get_min_bound()))
         self._camera    = ArcballCamera(bbox.get_center(), distance=diag * 1.5)
-        self._mesh_tol  = float(diag) * 0.01  # world-unit tolerance for depth test
+        self._mesh_tol  = float(diag) * 0.01
 
         self._renderer.upload_geometry(mesh, compute_normals=True)
 
-        # Read back normals for paint-side visibility culling.
-        # compute_vertex_normals() does NOT guarantee outward direction — it depends on
-        # the PLY file's face winding order.  Dental mesh exporters commonly produce
-        # inward-wound faces, so all normals end up pointing INTO the mesh.  When that
-        # happens, front-facing vertices have dot(normal, to_cam) < 0 and are EXCLUDED
-        # from painting while the invisible back-facing vertices are painted instead.
-        #
-        # Fix: check the mean alignment of normals against the centroid-to-vertex
-        # direction.  For any (approximately) convex mesh the outward normal must have
-        # positive agreement with that direction.  A negative mean means all normals are
-        # flipped, so we flip them back.
         normals  = np.asarray(mesh.vertex_normals).copy()
         centroid = self._verts_np.mean(axis=0)
-        outward  = self._verts_np - centroid            # expected outward direction
+        outward  = self._verts_np - centroid
         if np.einsum('ij,ij->i', normals, outward).mean() < 0:
             normals = -normals
-            # Update the mesh object too so Open3D lighting stays correct
             mesh.vertex_normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
         self._verts_normals = normals
         if self._show_wireframe:
@@ -190,14 +169,9 @@ class ViewerWidget(QWidget):
         self._needs_redraw = True
 
     def update_colors(self, colors: np.ndarray):
-        """Queue a color update. GPU upload is deferred to the next render frame.
-
-        On a 200 Hz tablet this is called ~200×/s; the GPU upload (remove_geometry
-        + add_geometry in Open3D) only happens once per rendered frame (~10 fps).
-        """
         if self._mesh is None:
             return
-        self._pending_colors = colors   # store reference — no conversion yet
+        self._pending_colors = colors
         self._needs_redraw   = True
 
     def toggle_wireframe(self):
@@ -219,7 +193,6 @@ class ViewerWidget(QWidget):
         self._apply_camera()
 
     def set_view(self, name: str):
-        """Public view presets: 'front', 'right', 'top', 'reset'."""
         if self._camera is None:
             return
         dispatch = {
@@ -235,7 +208,6 @@ class ViewerWidget(QWidget):
 
     def to_render_coords(self, x: float, y: float,
                          radius: float) -> tuple[float, float, float]:
-        """Convert widget pixel coords to render-buffer coords for paint hit-testing."""
         rw, rh = self._renderer.size
         ww     = max(self.width(),  1)
         wh     = max(self.height(), 1)
@@ -243,15 +215,6 @@ class ViewerWidget(QWidget):
 
     def compute_paint_mask(self, rx: float, ry: float,
                            rr: float) -> np.ndarray | None:
-        """Boolean mask of vertices that are (a) within paint radius and (b) visible.
-
-        Visibility uses a face-accurate depth test:
-        - Each vertex's view-space depth is compared against the rendered depth buffer
-          at its screen pixel.
-        - The depth buffer records the first FACE hit by each camera ray, so back-face
-          vertices that fall between front vertices (pixel gaps) are still rejected.
-        - View-space depth (z_in_view_space=True) is free from Filament's reversed-Z.
-        """
         if self._verts_2d is None:
             return None
 
@@ -266,14 +229,11 @@ class ViewerWidget(QWidget):
             dh, dw = self._depth_buf_vs.shape
             px = np.clip(self._verts_2d[:, 0].astype(np.int32), 0, dw - 1)
             py = np.clip(self._verts_2d[:, 1].astype(np.int32), 0, dh - 1)
-            buf = self._depth_buf_vs[py, px]   # depth of first face at each pixel
+            buf = self._depth_buf_vs[py, px]
             vd  = self._verts_vs_depth
-            # _mesh_tol (1 % of bbox diagonal) gives world-unit slack for normal
-            # interpolation across a face without letting back faces through.
             visible = (vd > 0.0) & (vd <= buf + self._mesh_tol)
             return in_radius & visible
 
-        # Fallback before first render: normal dot-product test
         if self._camera is None or self._verts_normals is None:
             return in_radius
         cam_pos = self._camera.get_position()
@@ -308,8 +268,8 @@ class ViewerWidget(QWidget):
     # Render loop
     # ------------------------------------------------------------------
 
-    _NAV_INTERVAL   = 1.0 / 30.0   # 30 fps during navigation (was 8 — too choppy)
-    _PAINT_INTERVAL = 1.0 / 20.0   # 20 fps during painting (GPU upload deferred)
+    _NAV_INTERVAL   = 1.0 / 30.0
+    _PAINT_INTERVAL = 1.0 / 20.0
 
     def _tick(self):
         if self._needs_redraw:
@@ -323,8 +283,6 @@ class ViewerWidget(QWidget):
         self.update()
 
     def _do_render(self):
-        # Flush pending color update — one GPU upload per frame regardless of
-        # how many update_colors() calls happened since the last render.
         if self._pending_colors is not None:
             self._mesh.vertex_colors = o3d.utility.Vector3dVector(
                 self._pending_colors.astype(np.float64) / 255.0)
@@ -335,24 +293,18 @@ class ViewerWidget(QWidget):
         if arr is None:
             return
         h, w = arr.shape[:2]
-        self._cached_qimage = QImage(arr.data, w, h, w * 3, QImage.Format_RGB888)
+        self._cached_qimage = QImage(arr.data, w, h, w * 3,
+                                     QImage.Format.Format_RGB888)
         self._needs_redraw  = False
 
         if self._proj_dirty and self._verts_np is not None:
             self._verts_2d, _ = self._renderer.project_vertices_with_depth(self._verts_np)
 
-            # View-space depth per vertex: distance from the camera plane along its axis.
-            # Computed from the view matrix (no projection / no reversed-Z involved).
-            # In Open3D's OpenGL-convention view space the camera looks in -Z, so
-            # objects in front have negative z; negate to get positive depths.
             view_mat = self._renderer.get_view_matrix()
             if view_mat is not None and self._verts_2d is not None:
                 vh = np.hstack([self._verts_np.astype(np.float64),
                                 np.ones((len(self._verts_np), 1))])
-                self._verts_vs_depth = (-( view_mat @ vh.T)[2]).astype(np.float32)
-
-                # Render depth in view-space (z_in_view_space=True returns the same
-                # positive distances regardless of Filament's internal reversed-Z).
+                self._verts_vs_depth = (-(view_mat @ vh.T)[2]).astype(np.float32)
                 self._depth_buf_vs = self._renderer.render_depth_view_space()
 
             self._proj_dirty = False
@@ -374,13 +326,12 @@ class ViewerWidget(QWidget):
         x, y = self._mouse_pos.x(), self._mouse_pos.y()
         r    = self._brush_radius
         rc   = self.active_color
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(QColor(0, 0, 0, 200), 2.5))
-        p.setBrush(Qt.NoBrush)
+        p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(x - r, y - r, r * 2, r * 2)
         p.setPen(QPen(QColor(int(rc[0]), int(rc[1]), int(rc[2]), 230), 1.5))
         p.drawEllipse(x - r + 2, y - r + 2, r * 2 - 4, r * 2 - 4)
-        # Center dot: black outline + white fill for visibility on any background
         p.setPen(QPen(QColor(0, 0, 0, 220), 1.0))
         p.setBrush(QColor(255, 255, 255, 220))
         p.drawEllipse(x - 2, y - 2, 4, 4)
@@ -400,20 +351,12 @@ class ViewerWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _hide_cursor(self):
-        """Hide the OS cursor and reset the inactivity timer.
-
-        Called on every tablet/mouse event in the viewer.  The timer is
-        restarted each time, so the cursor stays hidden while the pen is
-        actively moving here and reappears 150 ms after it stops (i.e.
-        moves to the palette or lifts off the tablet).
-        """
         if not self._cursor_hidden:
-            QApplication.setOverrideCursor(Qt.BlankCursor)
+            QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
             self._cursor_hidden = True
-        self._cursor_timer.start()   # restart countdown on each event
+        self._cursor_timer.start()
 
     def restore_cursor(self):
-        """Restore the OS cursor (timer expiry, leaveEvent, or pen lift)."""
         self._cursor_timer.stop()
         if self._cursor_hidden:
             QApplication.restoreOverrideCursor()
@@ -425,21 +368,17 @@ class ViewerWidget(QWidget):
 
     def tabletEvent(self, event: QTabletEvent):
         self._hide_cursor()
-        # Always derive widget-local position from global coordinates.
-        # On Linux/X11, event.pos() can carry a window-relative offset after the pen
-        # visits another widget (palette panel), causing an apparent upward shift when
-        # returning to the viewer.  globalPos() is always the raw tablet screen position.
-        local_pos = self.mapFromGlobal(event.globalPos())
+        local_pos = self.mapFromGlobal(event.globalPosition().toPoint())
         self._mouse_pos = local_pos
         self._input.handle_tablet(event, local_pos)
 
     def mousePressEvent(self, e):
-        corrected = self.mapFromGlobal(e.globalPos())
+        corrected = self.mapFromGlobal(e.globalPosition().toPoint())
         self._input.handle_mouse_press(e, corrected)
 
     def mouseMoveEvent(self, e):
         self._hide_cursor()
-        corrected = self.mapFromGlobal(e.globalPos())
+        corrected = self.mapFromGlobal(e.globalPosition().toPoint())
         self._mouse_pos = corrected
         self._input.handle_mouse_move(e, corrected)
 
@@ -456,4 +395,4 @@ class ViewerWidget(QWidget):
         if self._camera is None:
             return
         self._camera.zoom(e.angleDelta().y() / 120.0)
-        self._apply_camera()  # sets _needs_redraw=True → renders on next 16ms tick
+        self._apply_camera()

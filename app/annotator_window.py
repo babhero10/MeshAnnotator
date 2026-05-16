@@ -3,27 +3,18 @@ AnnotatorWindow — application main window.
 
 Orchestrates ViewerWidget, AnnotationModel, Brush, FileManager.
 All domain logic goes through AnnotationModel; ViewerWidget only displays.
-
-Fixes applied:
-- Key 1/3/7/0 shortcut conflict resolved: numpad uses Qt.KeypadModifier (no scan codes)
-- Color key 1 now works correctly (was always intercepted by view shortcut before)
-- _save_current() returns bool; navigation aborts if save fails
-- set_view() public API used instead of accessing private _camera
-- Menu bar added for discoverability
-- F1 shows keyboard shortcut help
 """
 from __future__ import annotations
 
 import os
 import numpy as np
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QFileDialog,
-    QMessageBox, QShortcut, QSplitter, QAction, QMenu,
-    QDialog, QTextEdit,
+    QMessageBox, QSplitter, QDialog, QTextEdit,
 )
-from PyQt5.QtCore import Qt, pyqtSlot
-from PyQt5.QtGui import QKeySequence
+from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtGui import QKeySequence, QShortcut, QAction
 
 from app.viewer import ViewerWidget
 from app.palette_panel import PalettePanel
@@ -82,13 +73,13 @@ class ShortcutHelpDialog(QDialog):
       <tr><td><b>Barrel + Shift</b></td><td>Pan</td></tr>
       <tr><td><b>Barrel + Ctrl</b></td><td>Zoom</td></tr>
     </table>
-    <p style="color:#666; font-size:10px;">Works with both RightButton and MiddleButton barrel mappings (XP-Pen default is Right).</p>
+    <p style="color:#666; font-size:10px;">Works with both RightButton and MiddleButton barrel mappings.</p>
     </body>"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
-        self.setModal(False)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.resize(440, 500)
         self.setStyleSheet("background: #1e1e1e;")
         layout = QVBoxLayout(self)
@@ -158,7 +149,6 @@ class AnnotatorWindow(QMainWindow):
         tb.addWidget(self._file_label)
         tb.addStretch()
 
-        # View preset buttons
         for label, view in [("Front", "front"), ("Right", "right"),
                              ("Top", "top"), ("⟳ Reset", "reset")]:
             btn = QPushButton(label)
@@ -177,7 +167,6 @@ class AnnotatorWindow(QMainWindow):
             "QPushButton:hover { background: #4a4a4a; }"
             "QPushButton:checked { background: #4a6080; border-color: #6090b0; }"
         )
-        # Connection deferred to _connect_signals() where _viewer exists
         tb.addWidget(self._wire_btn)
 
         tb.addSpacing(8)
@@ -189,13 +178,13 @@ class AnnotatorWindow(QMainWindow):
         for btn in (self._prev_btn, self._next_btn):
             btn.setStyleSheet(_BTN_DIS)
             btn.setFixedWidth(32)
-            btn.setEnabled(False)   # disabled until a folder is loaded
+            btn.setEnabled(False)
         tb.addWidget(self._prev_btn)
         tb.addWidget(self._next_btn)
         root.addWidget(topbar)
 
         # Main area
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setStyleSheet("QSplitter::handle { background: #383838; width: 2px; }")
 
         self._viewer = ViewerWidget()
@@ -229,7 +218,6 @@ class AnnotatorWindow(QMainWindow):
             "QMenu::item:selected { background: #3a5a7a; }"
         )
 
-        # File
         file_menu = mb.addMenu("File")
         self._add_action(file_menu, "Open Folder…", self._pick_folder, "Ctrl+O")
         file_menu.addSeparator()
@@ -240,22 +228,19 @@ class AnnotatorWindow(QMainWindow):
         file_menu.addSeparator()
         self._add_action(file_menu, "Exit", self.close)
 
-        # Edit
         edit_menu = mb.addMenu("Edit")
         self._add_action(edit_menu, "Undo", self._undo, "Ctrl+Z")
         self._add_action(edit_menu, "Redo", self._redo, "Ctrl+Y")
 
-        # View
         view_menu = mb.addMenu("View")
-        self._add_action(view_menu, "Frame Mesh",    self._viewer.frame_mesh, "F")
-        self._add_action(view_menu, "Toggle Wireframe", self._toggle_wireframe, "W")
+        self._add_action(view_menu, "Frame Mesh",       self._viewer.frame_mesh, "F")
+        self._add_action(view_menu, "Toggle Wireframe", self._toggle_wireframe,  "W")
         view_menu.addSeparator()
-        self._add_action(view_menu, "Front View",  lambda: self._viewer.set_view("front"))
-        self._add_action(view_menu, "Right View",  lambda: self._viewer.set_view("right"))
-        self._add_action(view_menu, "Top View",    lambda: self._viewer.set_view("top"))
-        self._add_action(view_menu, "Reset View",  lambda: self._viewer.set_view("reset"))
+        self._add_action(view_menu, "Front View", lambda: self._viewer.set_view("front"))
+        self._add_action(view_menu, "Right View", lambda: self._viewer.set_view("right"))
+        self._add_action(view_menu, "Top View",   lambda: self._viewer.set_view("top"))
+        self._add_action(view_menu, "Reset View", lambda: self._viewer.set_view("reset"))
 
-        # Help
         help_menu = mb.addMenu("Help")
         self._add_action(help_menu, "Keyboard Shortcuts", self._show_shortcuts, "F1")
 
@@ -270,8 +255,6 @@ class AnnotatorWindow(QMainWindow):
     def _connect_signals(self):
         self._prev_btn.clicked.connect(self._go_prev)
         self._next_btn.clicked.connect(self._go_next)
-        # Wire btn: Qt auto-flips checked state on click; we only need to sync viewer.
-        # For keyboard shortcut W, _toggle_wireframe also manually flips the button.
         self._wire_btn.clicked.connect(self._viewer.toggle_wireframe)
         self._palette.color_selected.connect(self._on_palette_color_selected)
         self._palette.brush_radius_changed.connect(self._on_brush_radius_changed)
@@ -287,27 +270,22 @@ class AnnotatorWindow(QMainWindow):
         sc("Ctrl+Shift+Z", self._redo)
         sc("[", self._brush_decrease)
         sc("]", self._brush_increase)
-        # Note: 1/3/7/0 for views and 1-0 for colors are handled in keyPressEvent
-        # to avoid conflicts. Menu bar handles Ctrl+S, Ctrl+Z, Ctrl+Y, F, W, F1.
 
     def keyPressEvent(self, e):
         key = e.key()
         mod = e.modifiers()
 
-        # Numpad view presets — distinguished by Qt.KeypadModifier (cross-platform)
-        if mod & Qt.KeypadModifier:
+        if mod & Qt.KeyboardModifier.KeypadModifier:
             view_map = {
-                Qt.Key_1: "front",
-                Qt.Key_3: "right",
-                Qt.Key_7: "top",
-                Qt.Key_0: "reset",
+                Qt.Key.Key_1: "front",
+                Qt.Key.Key_3: "right",
+                Qt.Key.Key_7: "top",
+                Qt.Key.Key_0: "reset",
             }
             if key in view_map:
                 self._viewer.set_view(view_map[key])
                 return
 
-        # Color selection 1–9, 0 (regular keyboard only, no modifiers)
-        # Use a set to avoid the '' in "123..." substring-match false positive
         char = e.text()
         if char in {"1","2","3","4","5","6","7","8","9","0"} and not mod:
             idx = (int(char) - 1) if char != "0" else 9
@@ -401,13 +379,15 @@ class AnnotatorWindow(QMainWindow):
             return True
         reply = QMessageBox.question(
             self, "Unsaved Changes", "Save before continuing?",
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.StandardButton.Yes |
+            QMessageBox.StandardButton.No  |
+            QMessageBox.StandardButton.Cancel,
         )
-        if reply == QMessageBox.Cancel:
+        if reply == QMessageBox.StandardButton.Cancel:
             return False
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             if not self._save_current():
-                return False  # save failed → don't navigate
+                return False
         return True
 
     # ------------------------------------------------------------------
@@ -455,7 +435,7 @@ class AnnotatorWindow(QMainWindow):
 
     @pyqtSlot(int)
     def _on_brush_radius_changed(self, r: int):
-        self._brush_radius       = r
+        self._brush_radius        = r
         self._viewer.brush_radius = r
         self._cfg["brush_radius"] = r
         save_config(self._cfg)
@@ -496,7 +476,6 @@ class AnnotatorWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _save_current(self) -> bool:
-        """Write PLY. Returns True on success, False on failure."""
         if not self._model.loaded:
             return True
         out_path = self._file_mgr.output_path(self._file_mgr.current_filename)
@@ -507,7 +486,6 @@ class AnnotatorWindow(QMainWindow):
             QMessageBox.critical(self, "Save Error", str(ex))
             return False
 
-        # Verify in-memory instead of re-reading from disk
         bad = (~colors_are_palette_exact(self._model.colors)).sum()
         n   = len(self._model.colors)
         n_cols = len({tuple(c) for c in self._model.colors.tolist()})
@@ -525,13 +503,11 @@ class AnnotatorWindow(QMainWindow):
         return True
 
     # ------------------------------------------------------------------
-    # Wireframe (keyboard/menu path — button click takes the direct path)
+    # Wireframe
     # ------------------------------------------------------------------
 
     def _toggle_wireframe(self):
-        """Called from menu action / W key. Button click goes directly to viewer."""
         self._viewer.toggle_wireframe()
-        # Button click auto-flips checked; keyboard shortcut does not → sync manually
         self._wire_btn.setChecked(not self._wire_btn.isChecked())
 
     # ------------------------------------------------------------------
@@ -550,13 +526,15 @@ class AnnotatorWindow(QMainWindow):
         if self._unsaved:
             reply = QMessageBox.question(
                 self, "Unsaved Changes", "Save before quitting?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No  |
+                QMessageBox.StandardButton.Cancel,
             )
-            if reply == QMessageBox.Cancel:
+            if reply == QMessageBox.StandardButton.Cancel:
                 e.ignore()
                 return
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 if not self._save_current():
-                    e.ignore()   # save failed — abort close to prevent data loss
+                    e.ignore()
                     return
         e.accept()
