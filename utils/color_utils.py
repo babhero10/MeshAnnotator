@@ -22,39 +22,18 @@ def rgb_to_lab(colors_uint8: np.ndarray) -> np.ndarray:
     return np.stack([L, a, b], axis=1)
 
 
-def rgb_to_hue(colors_uint8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    c     = colors_uint8.astype(np.float32) / 255.0
-    maxc  = c.max(axis=1)
-    minc  = c.min(axis=1)
-    delta = maxc - minc
-    sat   = np.where(maxc > 0, delta / maxc, 0.0)
-    H     = np.zeros(len(c))
-    mr = (maxc == c[:, 0]) & (delta > 0)
-    mg = (maxc == c[:, 1]) & (delta > 0)
-    mb = (maxc == c[:, 2]) & (delta > 0)
-    H[mr] = (60 * ((c[mr, 1] - c[mr, 2]) / delta[mr])) % 360
-    H[mg] = (60 * ((c[mg, 2] - c[mg, 0]) / delta[mg]) + 120) % 360
-    H[mb] = (60 * ((c[mb, 0] - c[mb, 1]) / delta[mb]) + 240) % 360
-    return H, sat
-
-
 def snap_to_palette(colors: np.ndarray) -> np.ndarray:
-    SAT_THRESHOLD = 0.25
-    hues, sats = rgb_to_hue(colors)
-    pal_hues, _ = rgb_to_hue(PALETTE_RGB)
+    """Map every vertex color to the nearest palette entry by CIE-LAB distance.
+
+    LAB distance is perceptually uniform, so palette entries with the same hue
+    but different lightness/chroma (e.g. Cyan vs Teal) are always distinguished
+    correctly. The old hue-only path for saturated colors caused same-hue pairs
+    to collapse onto whichever entry appeared first in the palette.
+    """
     colors_lab  = rgb_to_lab(colors)
     palette_lab = rgb_to_lab(PALETTE_RGB)
-    saturated   = sats >= SAT_THRESHOLD
-    result      = np.zeros(len(colors), dtype=np.int32)
-    if saturated.any():
-        h     = hues[saturated]
-        diffs = np.abs(h[:, None] - pal_hues[None, :]) % 360
-        circ  = np.minimum(diffs, 360 - diffs)
-        result[saturated] = np.argmin(circ, axis=1)
-    if (~saturated).any():
-        lab_dists = np.sum(
-            (colors_lab[~saturated, None] - palette_lab[None]) ** 2, axis=2)
-        result[~saturated] = np.argmin(lab_dists, axis=1)
+    dists  = np.sum((colors_lab[:, None] - palette_lab[None]) ** 2, axis=2)
+    result = np.argmin(dists, axis=1)
     return PALETTE_RGB[result]
 
 
