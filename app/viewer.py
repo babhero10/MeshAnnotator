@@ -255,12 +255,23 @@ class ViewerWidget(QWidget):
     def _apply_camera(self):
         if self._camera is None:
             return
-        pos    = self._camera.get_position().astype(np.float32)
-        target = self._camera.center.astype(np.float32)
-        up     = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        pos    = self._camera.get_position().astype(np.float64)
+        target = self._camera.center.astype(np.float64)
+        up     = np.array([0.0, 1.0, 0.0], dtype=np.float64)
         if abs(self._camera.phi) < 0.1 or abs(self._camera.phi - np.pi) < 0.1:
-            up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+            up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         self._renderer.setup_camera(target, pos, up)
+
+        # Build view-space rotation from camera basis vectors and pass to renderer
+        # so lights stay fixed on screen as the camera orbits (Blender Solid behavior).
+        fwd   = target - pos
+        fwd  /= np.linalg.norm(fwd)
+        right = np.cross(fwd, up); right /= np.linalg.norm(right)
+        tup   = np.cross(right, fwd)
+        # View matrix rotation rows: [right, tup, -fwd]  (OpenGL convention)
+        view_R = np.array([right, tup, -fwd], dtype=np.float64)
+        self._renderer.update_light_directions(view_R)
+
         self._proj_dirty   = True
         self._needs_redraw = True
 
