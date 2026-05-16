@@ -20,6 +20,7 @@ class MeshRenderer:
         self._renderer: rendering.OffscreenRenderer | None = None
         self._scene = None
         self._last_image: np.ndarray | None = None
+        self._initializing = False  # re-entrancy guard for OffscreenRenderer creation
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -27,9 +28,15 @@ class MeshRenderer:
 
     def _ensure(self) -> bool:
         if self._renderer is None:
-            self._renderer = rendering.OffscreenRenderer(self._w, self._h)
-            self._scene    = self._renderer.scene
-            self._init_lighting()
+            if self._initializing:
+                return False  # re-entrant call during OffscreenRenderer construction
+            self._initializing = True
+            try:
+                self._renderer = rendering.OffscreenRenderer(self._w, self._h)
+                self._scene    = self._renderer.scene
+                self._init_lighting()
+            finally:
+                self._initializing = False
         return self._renderer is not None
 
     def _init_lighting(self):
