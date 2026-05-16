@@ -11,7 +11,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QFileDialog,
-    QMessageBox, QSplitter, QDialog, QTextEdit, QFrame,
+    QMessageBox, QSplitter, QDialog, QTextEdit, QFrame, QSlider,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QKeySequence, QShortcut, QAction, QColor, QPalette
@@ -249,11 +249,37 @@ class AnnotatorWindow(QMainWindow):
 
         tb.addSpacing(8)
 
-        # Wireframe toggle
+        # Wireframe toggle + density control
         self._wire_btn = QPushButton("Wireframe")
         self._wire_btn.setCheckable(True)
         self._wire_btn.setStyleSheet(_BTN_TOGGLE)
         tb.addWidget(self._wire_btn)
+
+        self._density_label = QLabel("100%")
+        self._density_label.setFixedWidth(34)
+        self._density_label.setAlignment(Qt.AlignmentFlag.AlignRight |
+                                         Qt.AlignmentFlag.AlignVCenter)
+        self._density_label.setStyleSheet("color: #505068; font-size: 10px;")
+
+        self._density_slider = QSlider(Qt.Orientation.Horizontal)
+        self._density_slider.setMinimum(1)
+        self._density_slider.setMaximum(100)
+        self._density_slider.setValue(100)
+        self._density_slider.setFixedWidth(90)
+        self._density_slider.setEnabled(False)
+        self._density_slider.setToolTip("Wireframe edge density — keep sharpest N% of edges")
+        self._density_slider.setStyleSheet(
+            "QSlider::groove:horizontal {"
+            "  background: #252535; height: 3px; border-radius: 1px; }"
+            "QSlider::handle:horizontal {"
+            "  background: #5294e2; width: 10px; height: 10px;"
+            "  margin: -4px 0; border-radius: 5px; }"
+            "QSlider::sub-page:horizontal { background: #5294e2; border-radius: 1px; }"
+            "QSlider:disabled::handle:horizontal { background: #404055; }"
+            "QSlider:disabled::sub-page:horizontal { background: #303048; }"
+        )
+        tb.addWidget(self._density_slider)
+        tb.addWidget(self._density_label)
 
         tb.addSpacing(8)
 
@@ -296,8 +322,8 @@ class AnnotatorWindow(QMainWindow):
         self._add_action(edit_menu, "Redo", self._redo, "Ctrl+Y")
 
         view_menu = mb.addMenu("View")
-        self._add_action(view_menu, "Frame Mesh",       self._viewer.frame_mesh, "F")
-        self._add_action(view_menu, "Toggle Wireframe", self._toggle_wireframe,  "W")
+        self._add_action(view_menu, "Frame Mesh",       self._viewer.frame_mesh,  "F")
+        self._add_action(view_menu, "Toggle Wireframe", self._do_toggle_wireframe, "W")
         view_menu.addSeparator()
         self._add_action(view_menu, "Front View", lambda: self._viewer.set_view("front"))
         self._add_action(view_menu, "Right View", lambda: self._viewer.set_view("right"))
@@ -318,7 +344,8 @@ class AnnotatorWindow(QMainWindow):
     def _connect_signals(self):
         self._prev_btn.clicked.connect(self._go_prev)
         self._next_btn.clicked.connect(self._go_next)
-        self._wire_btn.clicked.connect(self._viewer.toggle_wireframe)
+        self._wire_btn.clicked.connect(self._toggle_wireframe)
+        self._density_slider.valueChanged.connect(self._on_density_changed)
         self._palette.color_selected.connect(self._on_palette_color_selected)
         self._palette.brush_radius_changed.connect(self._on_brush_radius_changed)
         self._palette.save_requested.connect(self._save_current)
@@ -559,9 +586,21 @@ class AnnotatorWindow(QMainWindow):
 
     # ── Wireframe ──────────────────────────────────────────────────────────
 
+    def _do_toggle_wireframe(self):
+        """Toggle from menu / keyboard shortcut — keeps button in sync."""
+        self._wire_btn.setChecked(not self._wire_btn.isChecked())
+        self._toggle_wireframe()
+
     def _toggle_wireframe(self):
         self._viewer.toggle_wireframe()
-        self._wire_btn.setChecked(not self._wire_btn.isChecked())
+        on = self._wire_btn.isChecked()
+        self._density_slider.setEnabled(on)
+        self._density_label.setStyleSheet(
+            f"color: {'#8888aa' if on else '#505068'}; font-size: 10px;")
+
+    def _on_density_changed(self, value: int):
+        self._density_label.setText(f"{value}%")
+        self._viewer.set_wire_density(value / 100.0)
 
     # ── Help ───────────────────────────────────────────────────────────────
 

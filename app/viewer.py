@@ -63,6 +63,55 @@ def _all_mesh_edges(faces: np.ndarray) -> np.ndarray:
     return edges[mask].astype(np.int32)
 
 
+def _compute_edge_angles(vertices: np.ndarray, faces: np.ndarray,
+                         edges: np.ndarray) -> np.ndarray:
+    """Per-edge dihedral angle in [0, π]. Boundary edges get π (most important).
+
+    Higher angle = sharper crease = more important to display.
+    Fully vectorized — no Python loop over faces.
+    """
+    n_v = len(vertices)
+
+    # Face normals
+    e1 = vertices[faces[:, 1]] - vertices[faces[:, 0]]
+    e2 = vertices[faces[:, 2]] - vertices[faces[:, 0]]
+    fn = np.cross(e1, e2).astype(np.float64)
+    fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-10)
+
+    # For every face produce 3 (sorted-edge-key, face-id) pairs
+    f_e   = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    f_e_s = np.sort(f_e, axis=1)
+    fi_rep = np.tile(np.arange(len(faces)), 3)
+    fe_key = f_e_s[:, 0].astype(np.int64) * (n_v + 1) + f_e_s[:, 1].astype(np.int64)
+
+    # Build sorted lookup: edge key → original edge index
+    e_key  = edges[:, 0].astype(np.int64) * (n_v + 1) + edges[:, 1].astype(np.int64)
+    order  = np.argsort(e_key)
+    s_ekey = e_key[order]
+
+    # Match each face-edge to its edge index
+    idx   = np.clip(np.searchsorted(s_ekey, fe_key), 0, len(s_ekey) - 1)
+    valid = s_ekey[idx] == fe_key
+    ei    = order[idx[valid]]   # original edge indices
+    fi    = fi_rep[valid]       # corresponding face indices
+
+    # Group by edge (sort) to find the two faces per interior edge
+    so   = np.argsort(ei, stable=True)
+    s_ei = ei[so];  s_fi = fi[so]
+
+    uniq, cnt = np.unique(s_ei, return_counts=True)
+    interior  = uniq[cnt == 2]
+    starts    = np.searchsorted(s_ei, interior)
+    fi1, fi2  = s_fi[starts], s_fi[starts + 1]
+
+    cos_a    = np.clip((fn[fi1] * fn[fi2]).sum(axis=1), -1.0, 1.0)
+    dihedral = np.arccos(cos_a).astype(np.float32)
+
+    angles           = np.full(len(edges), np.pi, dtype=np.float32)
+    angles[interior] = dihedral
+    return angles
+
+
 class ViewerWidget(QWidget):
     paint_stroke = pyqtSignal(float, float, float, int)
     stroke_begin = pyqtSignal()
@@ -107,9 +156,11 @@ class ViewerWidget(QWidget):
 
         self._brush_radius  = 15
         self.active_color   = PALETTE_RGB[0].copy()
-        self._true_colors:   np.ndarray | None = None   # annotation colors (unshaded)
-        self._view_R:        np.ndarray | None = None   # 3×3 camera rotation (world→view)
+        self._true_colors:   np.ndarray | None = None
+        self._view_R:        np.ndarray | None = None
         self._shading_dirty: bool = False
+        self._wire_angles:   np.ndarray | None = None   # per-edge dihedral angle
+        self._wire_density:  float = 1.0                # 0-1 fraction of edges to show
 
         self._connect_input()
 
@@ -179,6 +230,7 @@ class ViewerWidget(QWidget):
         self._depth_buf_vs   = None
         self._proj_dirty     = True
         self._wire_edges     = _all_mesh_edges(faces)
+        self._wire_angles    = None   # computed after normals are fixed below
         self._pending_colors = None
         self._shading_dirty  = True
 
@@ -197,8 +249,10 @@ class ViewerWidget(QWidget):
             normals = -normals
             mesh.vertex_normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
         self._verts_normals = normals
+        self._wire_angles   = _compute_edge_angles(
+            self._verts_np, faces, self._wire_edges)
         if self._show_wireframe:
-            self._renderer.add_wireframe(self._verts_np, self._wire_edges)
+            self._renderer.add_wireframe(self._verts_np, self._filtered_wire_edges())
         self._apply_camera()
         self._needs_redraw = True
 
@@ -211,10 +265,30 @@ class ViewerWidget(QWidget):
     def toggle_wireframe(self):
         self._show_wireframe = not self._show_wireframe
         if self._show_wireframe and self._wire_edges is not None:
-            self._renderer.add_wireframe(self._verts_np, self._wire_edges)
+            self._renderer.add_wireframe(self._verts_np, self._filtered_wire_edges())
         else:
             self._renderer.remove_wireframe()
         self._needs_redraw = True
+
+    def set_wire_density(self, density: float):
+        """Set wireframe density (0–1). 1 = all edges; lower = only sharpest edges."""
+        self._wire_density = float(density)
+        if self._show_wireframe and self._wire_edges is not None:
+            self._renderer.add_wireframe(self._verts_np, self._filtered_wire_edges())
+            self._needs_redraw = True
+
+    def filtered_wire_edge_count(self) -> int:
+        return len(self._filtered_wire_edges()) if self._wire_edges is not None else 0
+
+    def _filtered_wire_edges(self) -> np.ndarray:
+        if self._wire_edges is None:
+            return np.empty((0, 2), dtype=np.int32)
+        if self._wire_density >= 1.0 or self._wire_angles is None:
+            return self._wire_edges
+        n_keep = max(1, int(round(len(self._wire_edges) * self._wire_density)))
+        # argpartition is O(n) — faster than full sort for large edge counts
+        order  = np.argpartition(self._wire_angles, -n_keep)[-n_keep:]
+        return self._wire_edges[order]
 
     def frame_mesh(self):
         if self._mesh is None or self._camera is None:
@@ -393,7 +467,7 @@ class ViewerWidget(QWidget):
         if resized and self._mesh is not None:
             self._renderer.upload_geometry(self._mesh, compute_normals=False)
             if self._show_wireframe and self._wire_edges is not None:
-                self._renderer.add_wireframe(self._verts_np, self._wire_edges)
+                self._renderer.add_wireframe(self._verts_np, self._filtered_wire_edges())
             self._apply_camera()
         self._needs_redraw = True
 
