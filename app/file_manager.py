@@ -10,6 +10,8 @@ DEFAULT_CONFIG = {
     "last_index": 0,
     "brush_radius": 15,
     "snap_on_load": True,
+    "wireframe": False,
+    "palette": [],          # populated on first run from built-in defaults
 }
 
 

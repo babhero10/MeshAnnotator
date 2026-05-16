@@ -20,9 +20,35 @@ from app.viewer import ViewerWidget
 from app.palette_panel import PalettePanel
 from app.annotation_model import AnnotationModel
 from app.file_manager import FileManager, load_config, save_config
+import app.config as _app_config
 from app.config import PALETTE_RGB, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX, BRUSH_RADIUS_STEP
 from utils.ply_io import read_ply, write_ply
 from utils.color_utils import snap_to_palette, colors_are_palette_exact
+
+
+def _sync_palette(cfg: dict):
+    """Apply palette from config → module arrays, or write defaults if absent.
+
+    Users can customise colors by editing the ``palette`` list in config.json.
+    Each entry: {"name": "Red", "rgb": [255, 0, 0]}
+    """
+    if not cfg.get("palette"):
+        # First run — write the built-in defaults so users can edit them.
+        cfg["palette"] = [
+            {"name": name, "rgb": list(map(int, rgb))}
+            for name, rgb in zip(_app_config.PALETTE_NAMES,
+                                  _app_config.PALETTE_RGB)
+        ]
+        return
+
+    entries = cfg["palette"]
+    n = min(len(entries), len(_app_config.PALETTE_NAMES))
+    for i in range(n):
+        e = entries[i]
+        _app_config.PALETTE_NAMES[i] = str(e.get("name", _app_config.PALETTE_NAMES[i]))
+        rgb = e.get("rgb", [])
+        if len(rgb) == 3:
+            _app_config.PALETTE_RGB[i] = np.clip(rgb, 0, 255).astype(np.uint8)
 
 # ── Shared button styles ──────────────────────────────────────────────────────
 _BTN = (
@@ -153,6 +179,7 @@ class AnnotatorWindow(QMainWindow):
         self.setStyleSheet(_WINDOW_STYLE)
 
         self._cfg      = load_config()
+        _sync_palette(self._cfg)          # patch module arrays before UI is built
         self._file_mgr = FileManager()
         self._model    = AnnotationModel()
         self._unsaved  = False
@@ -165,6 +192,11 @@ class AnnotatorWindow(QMainWindow):
 
         self._viewer.brush_radius = self._brush_radius
         self._palette.set_brush_radius(self._brush_radius)
+
+        # Restore wireframe state
+        if self._cfg.get("wireframe", False):
+            self._wire_btn.setChecked(True)
+            self._toggle_wireframe()
 
         input_dir = self._cfg.get("input_dir", "")
         if input_dir and os.path.isdir(input_dir):
@@ -392,8 +424,11 @@ class AnnotatorWindow(QMainWindow):
                 self._viewer.set_view(view_map[key])
                 return
 
+        # Strip KeypadModifier so numpad digits that aren't view-preset keys
+        # (2, 4, 5, 6, 8, 9) also trigger color selection.
+        plain_mod = mod & ~Qt.KeyboardModifier.KeypadModifier
         char = e.text()
-        if char in {"1","2","3","4","5","6","7","8","9","0"} and not mod:
+        if char in {"1","2","3","4","5","6","7","8","9","0"} and not plain_mod:
             idx = (int(char) - 1) if char != "0" else 9
             self._set_color(idx)
             return
@@ -634,6 +669,8 @@ class AnnotatorWindow(QMainWindow):
         self._density_slider.setEnabled(on)
         self._density_label.setStyleSheet(
             f"color: {'#c0c0e0' if on else '#606088'}; font-size: 10px;")
+        self._cfg["wireframe"] = on
+        save_config(self._cfg)
 
     def _on_density_changed(self, value: int):
         self._density_label.setText(f"{value}%")
