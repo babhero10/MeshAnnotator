@@ -11,7 +11,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QFileDialog,
-    QMessageBox, QSplitter, QDialog, QTextEdit, QFrame, QSlider,
+    QMessageBox, QSplitter, QDialog, QTextEdit, QFrame, QSlider, QLineEdit,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QKeySequence, QShortcut, QAction, QColor, QPalette
@@ -66,7 +66,7 @@ _MENU_STYLE = (
 )
 
 _STATUS_STYLE = (
-    "QStatusBar { background: #141420; color: #505068; font-size: 11px;"
+    "QStatusBar { background: #141420; color: #9090b0; font-size: 11px;"
     "  border-top: 1px solid #252538; }"
     "QStatusBar::item { border: none; }"
 )
@@ -210,7 +210,7 @@ class AnnotatorWindow(QMainWindow):
         self.setStatusBar(self._status)
 
         self._tablet_label = QLabel("  Mouse")
-        self._tablet_label.setStyleSheet("color: #404055; font-size: 10px;")
+        self._tablet_label.setStyleSheet("color: #7070a0; font-size: 10px;")
         self._status.addPermanentWidget(self._tablet_label)
         self._status.showMessage("Ready — open a folder to begin")
 
@@ -225,7 +225,7 @@ class AnnotatorWindow(QMainWindow):
         # File label (left)
         self._file_label = QLabel("No file loaded")
         self._file_label.setStyleSheet(
-            "color: #7878a0; font-size: 11px; padding: 0 4px;")
+            "color: #a8a8c8; font-size: 11px; padding: 0 4px;")
         tb.addWidget(self._file_label)
         tb.addStretch()
 
@@ -259,7 +259,7 @@ class AnnotatorWindow(QMainWindow):
         self._density_label.setFixedWidth(34)
         self._density_label.setAlignment(Qt.AlignmentFlag.AlignRight |
                                          Qt.AlignmentFlag.AlignVCenter)
-        self._density_label.setStyleSheet("color: #505068; font-size: 10px;")
+        self._density_label.setStyleSheet("color: #8888aa; font-size: 10px;")
 
         self._density_slider = QSlider(Qt.Orientation.Horizontal)
         self._density_slider.setMinimum(1)
@@ -291,14 +291,30 @@ class AnnotatorWindow(QMainWindow):
 
         tb.addSpacing(8)
 
-        # Navigation buttons
+        # Navigation buttons + jump-to input
         self._prev_btn = QPushButton("◀")
         self._next_btn = QPushButton("▶")
         for btn in (self._prev_btn, self._next_btn):
             btn.setStyleSheet(_BTN)
             btn.setFixedWidth(32)
             btn.setEnabled(False)
+
+        self._goto_input = QLineEdit()
+        self._goto_input.setFixedWidth(52)
+        self._goto_input.setEnabled(False)
+        self._goto_input.setPlaceholderText("# …")
+        self._goto_input.setToolTip("Jump to file number (press Enter)")
+        self._goto_input.setStyleSheet(
+            "QLineEdit {"
+            "  background: #1e1e2e; color: #c0c0e0; border: 1px solid #35354a;"
+            "  border-radius: 4px; padding: 2px 6px; font-size: 11px; }"
+            "QLineEdit:focus { border-color: #5294e2; }"
+            "QLineEdit::placeholder { color: #505068; }"
+        )
+        self._goto_input.returnPressed.connect(self._go_to_index)
+
         tb.addWidget(self._prev_btn)
+        tb.addWidget(self._goto_input)
         tb.addWidget(self._next_btn)
 
         return topbar
@@ -432,8 +448,8 @@ class AnnotatorWindow(QMainWindow):
         total  = self._file_mgr.count
         marker = "  ●" if self._unsaved else ""
         self._file_label.setText(
-            f"<span style='color:#404060'>{idx} / {total}</span>"
-            f"  <span style='color:#9090b8'>{fn}</span>"
+            f"<span style='color:#7878a8'>{idx} / {total}</span>"
+            f"  <span style='color:#c0c0e0'>{fn}</span>"
             f"<span style='color:#e05050'>{marker}</span>")
         self.setWindowTitle(
             f"Tooth Annotator  —  {fn}{'  ●' if self._unsaved else ''}")
@@ -441,8 +457,29 @@ class AnnotatorWindow(QMainWindow):
     def _update_nav_buttons(self):
         self._prev_btn.setEnabled(self._file_mgr.has_prev())
         self._next_btn.setEnabled(self._file_mgr.has_next())
+        has = self._file_mgr.count > 0
+        self._goto_input.setEnabled(has)
+        if has:
+            self._goto_input.setPlaceholderText(
+                f"1–{self._file_mgr.count}")
 
     # ── Navigation ─────────────────────────────────────────────────────────
+
+    def _go_to_index(self):
+        text = self._goto_input.text().strip()
+        self._goto_input.clear()
+        if not text.isdigit():
+            return
+        target = int(text) - 1   # 1-based input → 0-based index
+        target = max(0, min(target, self._file_mgr.count - 1))
+        if target == self._file_mgr.current_index:
+            return
+        if not self._maybe_save_prompt():
+            return
+        self._file_mgr.set_index(target)
+        self._cfg["last_index"] = self._file_mgr.current_index
+        save_config(self._cfg)
+        self._load_current_file()
 
     def _go_next(self):
         if not self._file_mgr.has_next():
@@ -596,7 +633,7 @@ class AnnotatorWindow(QMainWindow):
         on = self._wire_btn.isChecked()
         self._density_slider.setEnabled(on)
         self._density_label.setStyleSheet(
-            f"color: {'#8888aa' if on else '#505068'}; font-size: 10px;")
+            f"color: {'#c0c0e0' if on else '#606088'}; font-size: 10px;")
 
     def _on_density_changed(self, value: int):
         self._density_label.setText(f"{value}%")

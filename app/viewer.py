@@ -365,16 +365,28 @@ class ViewerWidget(QWidget):
             return
         pos    = self._camera.get_position().astype(np.float64)
         target = self._camera.center.astype(np.float64)
-        up     = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        if abs(self._camera.phi) < 0.1 or abs(self._camera.phi - np.pi) < 0.1:
-            up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+        # Stable up vector derived from theta — never singularly near the poles.
+        # phi is clamped to [0.05, π-0.05] so cross(fwd, world_Y) has magnitude
+        # ~sin(phi) ≥ 0.05, but the special-case branch that switched to [0,0,1]
+        # at phi < 0.1 introduced a hard discontinuity causing visual flips.
+        # Using world-Y directly everywhere is safe within the clamped range.
+        up  = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        fwd = target - pos;  fwd /= np.linalg.norm(fwd)
+        right = np.cross(fwd, up)
+        rn = np.linalg.norm(right)
+        if rn < 1e-6:
+            # True pole fallback (shouldn't happen with phi clamped, but be safe)
+            right = np.array([np.sin(self._camera.theta), 0.0,
+                               -np.cos(self._camera.theta)], dtype=np.float64)
+        else:
+            right /= rn
+        up = np.cross(right, fwd)
+
         self._renderer.setup_camera(target, pos, up)
 
-        # Compute view-space rotation matrix for software shading (Blender Solid behavior).
-        fwd   = target - pos;  fwd   /= np.linalg.norm(fwd)
-        right = np.cross(fwd, up);  right /= np.linalg.norm(right)
-        tup   = np.cross(right, fwd)
-        self._view_R       = np.array([right, tup, -fwd], dtype=np.float64)
+        # View-space rotation matrix for software shading.
+        self._view_R       = np.array([right, up, -fwd], dtype=np.float64)
         self._shading_dirty = True
 
         self._proj_dirty   = True

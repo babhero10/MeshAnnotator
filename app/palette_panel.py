@@ -175,7 +175,7 @@ class ColorSwatch(QWidget):
         p.setBrush(QBrush(_KEY_BADGE))
         p.drawRoundedRect(badge_r, 3, 3)
         p.setFont(self._font_key)
-        p.setPen(QPen(QColor(90, 90, 100)))
+        p.setPen(QPen(QColor(160, 160, 175)))
         p.drawText(badge_r, Qt.AlignmentFlag.AlignCenter, self.key_hint)
 
         # ── Selection border ──────────────────────────────────────────────
@@ -195,7 +195,7 @@ class _SectionLabel(QLabel):
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet(
-            "color: #505060; font-weight: bold; font-size: 9px;"
+            "color: #8080a0; font-weight: bold; font-size: 9px;"
             " letter-spacing: 2px; padding: 0px;")
 
 
@@ -301,7 +301,7 @@ class PalettePanel(QWidget):
 
         hint = QLabel("Ctrl+S")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setStyleSheet("color: #404050; font-size: 9px;")
+        hint.setStyleSheet("color: #707088; font-size: 9px;")
         layout.addWidget(hint)
 
         self.select_color(0)
