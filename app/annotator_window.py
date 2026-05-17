@@ -230,6 +230,9 @@ class AnnotatorWindow(QMainWindow):
         if self._cfg.get("wireframe", False):
             self._wire_btn.setChecked(True)
             self._toggle_wireframe()
+        density = self._cfg.get("wire_density", 100)
+        self._density_slider.setValue(density)
+        self._density_label.setText(f"{density}%")
 
         input_dir = self._cfg.get("input_dir", "")
         if input_dir and os.path.isdir(input_dir):
@@ -460,6 +463,7 @@ class AnnotatorWindow(QMainWindow):
         self._palette.palette_switch_requested.connect(self._switch_palette)
         self._palette.palette_new_requested.connect(self._new_palette)
         self._palette.palette_edit_requested.connect(self._edit_palette)
+        self._palette.palette_reordered.connect(self._on_palette_reordered)
         self._viewer.stroke_begin.connect(self._on_stroke_begin)
         self._viewer.paint_stroke.connect(self._on_paint_stroke)
         self._viewer.stroke_end.connect(self._on_stroke_end)
@@ -761,6 +765,16 @@ class AnnotatorWindow(QMainWindow):
 
     # ── Palette management ─────────────────────────────────────────────────────
 
+    def _on_palette_reordered(self, new_order: list, new_sel_idx: int) -> None:
+        active = self._cfg.get("active_palette", "")
+        for p in self._cfg.get("palettes", []):
+            if p["name"] == active:
+                p["colors"] = new_order
+                break
+        _apply_palette(new_order)
+        save_config(self._cfg)
+        self._set_color(min(new_sel_idx, len(_app_config.PALETTE_RGB) - 1))
+
     def _switch_palette(self, name: str) -> None:
         by_name = {p["name"]: p for p in self._cfg.get("palettes", [])}
         if name not in by_name:
@@ -926,6 +940,8 @@ class AnnotatorWindow(QMainWindow):
     def _on_density_changed(self, value: int):
         self._density_label.setText(f"{value}%")
         self._viewer.set_wire_density(value / 100.0)
+        self._cfg["wire_density"] = value
+        save_config(self._cfg)
 
     # ── Help ───────────────────────────────────────────────────────────────
 
