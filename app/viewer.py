@@ -506,14 +506,17 @@ class ViewerWidget(QWidget):
         r    = self._brush_radius
         rc   = self.active_color
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor(0, 0, 0, 200), 2.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
+        # Dark halo — keeps ring visible on bright/white mesh surfaces
+        p.setPen(QPen(QColor(0, 0, 0, 140), 3.5))
         p.drawEllipse(x - r, y - r, r * 2, r * 2)
-        p.setPen(QPen(QColor(int(rc[0]), int(rc[1]), int(rc[2]), 230), 1.5))
-        p.drawEllipse(x - r + 2, y - r + 2, r * 2 - 4, r * 2 - 4)
-        p.setPen(QPen(QColor(0, 0, 0, 220), 1.0))
-        p.setBrush(QColor(255, 255, 255, 220))
-        p.drawEllipse(x - 2, y - 2, 4, 4)
+        # White ring on top — marks the exact brush boundary on dark surfaces
+        p.setPen(QPen(QColor(255, 255, 255, 230), 1.5))
+        p.drawEllipse(x - r, y - r, r * 2, r * 2)
+        # Active-color center dot — shows current paint color without cluttering the boundary
+        p.setPen(QPen(QColor(0, 0, 0, 160), 1.0))
+        p.setBrush(QColor(int(rc[0]), int(rc[1]), int(rc[2]), 235))
+        p.drawEllipse(x - 4, y - 4, 8, 8)
 
     def _draw_crosshair(self, p: QPainter):
         x, y = self._mouse_pos.x(), self._mouse_pos.y()
