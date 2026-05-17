@@ -568,6 +568,7 @@ class ViewerWidget(QWidget):
         self._input.handle_tablet(event, local_pos)
 
     def mousePressEvent(self, e):
+        self.setFocus()   # steal keyboard focus from goto input and any other widget
         corrected = self.mapFromGlobal(e.globalPosition().toPoint())
         self._input.handle_mouse_press(e, corrected)
 

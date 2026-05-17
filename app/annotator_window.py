@@ -494,12 +494,9 @@ class AnnotatorWindow(QMainWindow):
         # Strip KeypadModifier so numpad digits that aren't view-preset keys
         # (2, 4, 5, 6, 8, 9) also trigger color selection.
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if (self._mode == ToolMode.SELECT
-                    and not self._goto_input.hasFocus()):
+            if self._mode == ToolMode.SELECT:
                 self._fill_selection()
-                return
-            super().keyPressEvent(e)
-            return
+            return  # always consume; _goto_input handles its own Enter via returnPressed
 
         if key == Qt.Key.Key_Escape:
             self._clear_selection()
