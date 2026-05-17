@@ -579,6 +579,11 @@ class AnnotatorWindow(QMainWindow):
     # ── Navigation ─────────────────────────────────────────────────────────
 
     def _go_to_index(self):
+        # If the user is in select mode, Enter means fill — not navigate.
+        if self._mode == ToolMode.SELECT:
+            self._goto_input.clearFocus()
+            self._fill_selection()
+            return
         text = self._goto_input.text().strip()
         self._goto_input.clear()
         if not text.isdigit():
@@ -694,6 +699,7 @@ class AnnotatorWindow(QMainWindow):
         self._mode = ToolMode.SELECT
         self._select_btn.setChecked(True)
         self._viewer.set_select_mode(True)
+        self._goto_input.clearFocus()   # prevent goto from intercepting Enter
         self._status.showMessage(
             "Select mode  —  click to select color cluster  ·  "
             "Shift+click add  ·  = expand  ·  - shrink  ·  Enter fill  ·  Esc clear")
