@@ -25,7 +25,7 @@ class ToolMode(Enum):
     SELECT = auto()
 
 from app.viewer import ViewerWidget
-from app.palette_panel import PalettePanel, PaletteEditorDialog
+from app.palette_panel import PalettePanel, PaletteEditorDialog, BrushSlider
 from app.annotation_model import AnnotationModel
 from app.file_manager import FileManager, load_config, save_config
 import app.config as _app_config
@@ -329,7 +329,7 @@ class AnnotatorWindow(QMainWindow):
                                          Qt.AlignmentFlag.AlignVCenter)
         self._density_label.setStyleSheet("color: #8888aa; font-size: 10px;")
 
-        self._density_slider = QSlider(Qt.Orientation.Horizontal)
+        self._density_slider = BrushSlider(Qt.Orientation.Horizontal)
         self._density_slider.setMinimum(1)
         self._density_slider.setMaximum(100)
         self._density_slider.setValue(100)
@@ -501,7 +501,7 @@ class AnnotatorWindow(QMainWindow):
             super().keyPressEvent(e)
             return
 
-        if key == Qt.Key.Key_Escape and self._mode == ToolMode.SELECT:
+        if key == Qt.Key.Key_Escape:
             self._clear_selection()
             return
 
@@ -742,12 +742,11 @@ class AnnotatorWindow(QMainWindow):
                 f"Filled  {self._model.selection_count:,} vertices")
 
     def _clear_selection(self):
-        if self._mode != ToolMode.SELECT:
-            return
         self._model.clear_selection()
         self._viewer.set_selection(None)
-        self._enter_paint_mode()
-        self._status.showMessage("Selection cleared — Paint mode")
+        if self._mode == ToolMode.SELECT:
+            self._enter_paint_mode()
+        self._status.showMessage("Selection cleared")
 
     # ── Palette / brush ────────────────────────────────────────────────────
 
