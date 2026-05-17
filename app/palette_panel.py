@@ -234,7 +234,8 @@ class BrushPreview(QWidget):
 
 
 class ColorSwatch(QWidget):
-    clicked = pyqtSignal(int)
+    clicked    = pyqtSignal(int)
+    drag_start = pyqtSignal(int)
 
     _font_name: QFont | None = None
     _font_bold: QFont | None = None
@@ -262,6 +263,9 @@ class ColorSwatch(QWidget):
         self.key_hint = key_hint
         self._selected = False
         self._hover    = False
+
+        self._press_pos:    QPointF | None = None
+        self._drag_started: bool = False
 
         self._color       = QColor(*rgb)
         self._color_light = self._color.lighter(130)
@@ -329,9 +333,159 @@ class ColorSwatch(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r, 5, 5)
 
-    def mousePressEvent(self, e):
+    def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.index)
+            self._press_pos    = e.position()
+            self._drag_started = False
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if self._press_pos is None or self._drag_started:
+            return
+        if (e.position() - self._press_pos).manhattanLength() >= 6:
+            self._drag_started = True
+            self.drag_start.emit(self.index)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        if e.button() == Qt.MouseButton.LeftButton:
+            if not self._drag_started:
+                self.clicked.emit(self.index)
+            self._press_pos    = None
+            self._drag_started = False
+
+
+class _DropLine(QWidget):
+    """Blue insertion-line drawn on top of swatches during drag-reorder."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setFixedHeight(4)
+        self.hide()
+
+    def show_at(self, y: int, width: int):
+        self.setGeometry(0, max(0, y - 2), width, 4)
+        self.raise_()
+        self.show()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cy = self.height() // 2
+        p.setPen(QPen(_ACCENT, 2))
+        p.drawLine(8, cy, self.width() - 8, cy)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(_ACCENT))
+        p.drawEllipse(2, cy - 3, 6, 6)
+        p.drawEllipse(self.width() - 8, cy - 3, 6, 6)
+
+
+class SwatchContainer(QWidget):
+    """Scrollable list of ColorSwatches that supports drag-to-reorder."""
+
+    color_clicked = pyqtSignal(int)
+    order_changed = pyqtSignal(list, int)   # (new_color_dicts, new_sel_idx)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+        self._swatches: list[ColorSwatch] = []
+
+        self._drag_idx: int | None = None
+        self._drop_idx: int | None = None
+        self._dragging: bool = False
+
+        self._drop_line = _DropLine(self)
+
+    # ── Public API ─────────────────────────────────────────────────────────
+
+    def clear_swatches(self):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._swatches.clear()
+
+    def add_swatch(self, swatch: ColorSwatch):
+        swatch.drag_start.connect(self._on_drag_start)
+        swatch.clicked.connect(self.color_clicked)
+        self._layout.addWidget(swatch)
+        self._swatches.append(swatch)
+        self._drop_line.raise_()
+
+    # ── Drag handling ──────────────────────────────────────────────────────
+
+    def _on_drag_start(self, idx: int):
+        self._drag_idx = idx
+        self._dragging = True
+        self._drop_idx = idx + 1
+        self.grabMouse()
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def _insert_pos_from_y(self, y: int) -> int:
+        for i, sw in enumerate(self._swatches):
+            if y < sw.y() + sw.height() // 2:
+                return i
+        return len(self._swatches)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if not self._dragging:
+            return
+        y = int(e.position().y())
+        self._drop_idx = self._insert_pos_from_y(y)
+
+        if not self._swatches:
+            self._drop_line.hide()
+            return
+
+        if self._drop_idx == 0:
+            line_y = self._swatches[0].y()
+        elif self._drop_idx >= len(self._swatches):
+            last = self._swatches[-1]
+            line_y = last.y() + last.height()
+        else:
+            line_y = self._swatches[self._drop_idx].y()
+
+        self._drop_line.show_at(line_y, self.width())
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        if (self._dragging and self._drag_idx is not None
+                and self._drop_idx is not None):
+            self._perform_reorder(self._drag_idx, self._drop_idx)
+        self._drag_idx = None
+        self._drop_idx = None
+        self._dragging = False
+        self.releaseMouse()
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._drop_line.hide()
+
+    def _perform_reorder(self, from_idx: int, to_idx: int):
+        actual_to = to_idx - 1 if to_idx > from_idx else to_idx
+        if actual_to == from_idx:
+            return
+
+        swatch = self._swatches.pop(from_idx)
+        self._swatches.insert(actual_to, swatch)
+
+        while self._layout.count():
+            self._layout.takeAt(0)
+        for sw in self._swatches:
+            self._layout.addWidget(sw)
+        self._drop_line.raise_()
+
+        for i, sw in enumerate(self._swatches):
+            sw.index    = i
+            sw.key_hint = str(i + 1) if i < 9 else ("0" if i == 9 else "–")
+            sw.update()
+
+        new_sel   = next((i for i, sw in enumerate(self._swatches)
+                          if sw._selected), 0)
+        new_order = [{"name": sw.name, "rgb": list(sw.rgb)}
+                     for sw in self._swatches]
+        self.order_changed.emit(new_order, new_sel)
 
 
 class _SectionLabel(QLabel):
@@ -383,11 +537,11 @@ class PalettePanel(QWidget):
     palette_switch_requested = pyqtSignal(str)
     palette_new_requested    = pyqtSignal()
     palette_edit_requested   = pyqtSignal()
+    palette_reordered        = pyqtSignal(list, int)   # (new_color_dicts, new_sel_idx)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(210)
-        self._swatches:      list[ColorSwatch] = []
         self._current_index: int = 0
         self._tablet_child:  QWidget | None = None
         self._build_ui()
@@ -443,11 +597,10 @@ class PalettePanel(QWidget):
         layout.addWidget(_SectionLabel("COLORS"))
         layout.addSpacing(4)
 
-        self._swatches_widget = QWidget()
+        self._swatches_widget = SwatchContainer()
         self._swatches_widget.setStyleSheet("background: transparent;")
-        self._swatches_layout = QVBoxLayout(self._swatches_widget)
-        self._swatches_layout.setContentsMargins(0, 0, 0, 0)
-        self._swatches_layout.setSpacing(0)
+        self._swatches_widget.color_clicked.connect(self._on_swatch_clicked)
+        self._swatches_widget.order_changed.connect(self._on_order_changed)
 
         swatch_scroll = QScrollArea()
         swatch_scroll.setWidget(self._swatches_widget)
@@ -538,11 +691,7 @@ class PalettePanel(QWidget):
 
     def rebuild_swatches(self):
         """Clear and repopulate color swatches from the module-level palette."""
-        while self._swatches_layout.count():
-            item = self._swatches_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._swatches.clear()
+        self._swatches_widget.clear_swatches()
 
         names   = _cfg.PALETTE_NAMES
         rgb_arr = _cfg.PALETTE_RGB
@@ -555,18 +704,17 @@ class PalettePanel(QWidget):
                 key = "–"
             rgb    = tuple(int(x) for x in rgb_arr[i])
             swatch = ColorSwatch(i, names[i], rgb, key)
-            swatch.clicked.connect(self._on_swatch_clicked)
-            self._swatches_layout.addWidget(swatch)
-            self._swatches.append(swatch)
+            self._swatches_widget.add_swatch(swatch)
 
-        idx = min(self._current_index, max(0, len(self._swatches) - 1))
+        swatches = self._swatches_widget._swatches
+        idx = min(self._current_index, max(0, len(swatches) - 1))
         self._current_index = idx
-        for i, sw in enumerate(self._swatches):
+        for i, sw in enumerate(swatches):
             sw.set_selected(i == idx)
 
     def select_color(self, index: int):
         self._current_index = index
-        for i, sw in enumerate(self._swatches):
+        for i, sw in enumerate(self._swatches_widget._swatches):
             sw.set_selected(i == index)
 
     def set_brush_radius(self, radius: int):
@@ -585,6 +733,10 @@ class PalettePanel(QWidget):
     def _on_swatch_clicked(self, index: int):
         self.select_color(index)
         self.color_selected.emit(index)
+
+    def _on_order_changed(self, new_order: list, new_sel_idx: int):
+        self._current_index = new_sel_idx
+        self.palette_reordered.emit(new_order, new_sel_idx)
 
     def _on_slider_changed(self, v: int):
         self._brush_preview.set_radius(v)
