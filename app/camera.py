@@ -28,7 +28,8 @@ class ArcballCamera:
         self.center   = np.array(center, dtype=np.float64)
         self.distance = float(distance)
         # Columns: right, up, back  (camera sits at center + distance*back)
-        self._rot = np.eye(3, dtype=np.float64)
+        self._rot        = np.eye(3, dtype=np.float64)
+        self._upside_down = False
         self.reset_view()
 
     def _set_from_angles(self, theta: float, phi: float):
@@ -41,10 +42,17 @@ class ArcballCamera:
         right /= np.linalg.norm(right)
         up = np.cross(back, right)
         self._rot = np.column_stack([right, up, back])
+        self._upside_down = False
 
     def rotate(self, dx: float, dy: float, sx: float = 0.003, sy: float = 0.003):
-        # Flip horizontal when upside-down so drag direction stays consistent
-        flip = -1.0 if self._rot[1, 1] < 0 else 1.0
+        # Hysteresis on flip state to avoid jitter at the pole boundary
+        cam_up_y = self._rot[1, 1]
+        if self._upside_down and cam_up_y > 0.1:
+            self._upside_down = False
+        elif not self._upside_down and cam_up_y < -0.1:
+            self._upside_down = True
+        flip = -1.0 if self._upside_down else 1.0
+
         Ry = _rot_matrix(np.array([0.0, 1.0, 0.0]), flip * dx * sx)
         right = self._rot[:, 0].copy()
         Rv = _rot_matrix(right, -dy * sy)
