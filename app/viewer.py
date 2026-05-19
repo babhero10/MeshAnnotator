@@ -206,7 +206,8 @@ class ViewerWidget(QWidget):
         if self._camera is None:
             return
         if self._nav_mode == NavMode.ROTATE:
-            self._camera.rotate(dx, dy)
+            w, h = max(self.width(), 1), max(self.height(), 1)
+            self._camera.rotate(dx, dy, sx=2 * 3.14159 / w, sy=3.14159 / h)
         elif self._nav_mode == NavMode.PAN:
             self._camera.pan(dx, dy)
         elif self._nav_mode == NavMode.ZOOM:
@@ -410,9 +411,7 @@ class ViewerWidget(QWidget):
         right = np.cross(fwd, up)
         rn = np.linalg.norm(right)
         if rn < 1e-6:
-            # True pole fallback (shouldn't happen with phi clamped, but be safe)
-            right = np.array([np.sin(self._camera.theta), 0.0,
-                               -np.cos(self._camera.theta)], dtype=np.float64)
+            right = self._camera._rot[:, 0].copy()
         else:
             right /= rn
         up = np.cross(right, fwd)
