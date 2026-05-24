@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QWidget, QSizePolicy, QApplication
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer
 from PyQt6.QtGui import QImage, QPainter, QPen, QColor, QTabletEvent
 
-from app.camera import ArcballCamera
+from app.camera import OrbitCamera
 from app.renderer import MeshRenderer
 from app.input_handler import InputHandler, NavMode
 from app.config import PALETTE_RGB
@@ -129,7 +129,7 @@ class ViewerWidget(QWidget):
 
         self._renderer = MeshRenderer(max(self.width(), 16), max(self.height(), 16))
         self._input    = InputHandler(brush_radius=15, parent=self)
-        self._camera: ArcballCamera | None = None
+        self._camera: OrbitCamera | None = None
         self._mesh:   o3d.geometry.TriangleMesh | None = None
 
         self._needs_redraw   = False
@@ -206,8 +206,8 @@ class ViewerWidget(QWidget):
         if self._camera is None:
             return
         if self._nav_mode == NavMode.ROTATE:
-            w, h = max(self.width(), 1), max(self.height(), 1)
-            self._camera.rotate(dx, dy, sx=2 * 3.14159 / w, sy=3.14159 / h)
+            # Controlled rotation around current center
+            self._camera.rotate(dx, dy, sx=0.005, sy=0.005)
         elif self._nav_mode == NavMode.PAN:
             self._camera.pan(dx, dy)
         elif self._nav_mode == NavMode.ZOOM:
@@ -242,7 +242,7 @@ class ViewerWidget(QWidget):
         bbox = mesh.get_axis_aligned_bounding_box()
         diag = np.linalg.norm(
             np.asarray(bbox.get_max_bound()) - np.asarray(bbox.get_min_bound()))
-        self._camera    = ArcballCamera(bbox.get_center(), distance=diag * 1.5)
+        self._camera    = OrbitCamera(bbox.get_center(), distance=diag * 1.5)
         self._mesh_tol  = float(diag) * 0.01
 
         self._renderer.upload_geometry(mesh, compute_normals=True)
@@ -400,26 +400,15 @@ class ViewerWidget(QWidget):
             return
         pos    = self._camera.get_position().astype(np.float64)
         target = self._camera.center.astype(np.float64)
-
-        # Stable up vector derived from theta — never singularly near the poles.
-        # phi is clamped to [0.05, π-0.05] so cross(fwd, world_Y) has magnitude
-        # ~sin(phi) ≥ 0.05, but the special-case branch that switched to [0,0,1]
-        # at phi < 0.1 introduced a hard discontinuity causing visual flips.
-        # Using world-Y directly everywhere is safe within the clamped range.
-        up  = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        fwd = target - pos;  fwd /= np.linalg.norm(fwd)
-        right = np.cross(fwd, up)
-        rn = np.linalg.norm(right)
-        if rn < 1e-6:
-            right = self._camera._rot[:, 0].copy()
-        else:
-            right /= rn
-        up = np.cross(right, fwd)
+        up     = self._camera.get_up().astype(np.float64)
 
         self._renderer.setup_camera(target, pos, up)
 
         # View-space rotation matrix for software shading.
-        self._view_R       = np.array([right, up, -fwd], dtype=np.float64)
+        fwd   = target - pos; fwd /= np.linalg.norm(fwd)
+        right = np.cross(fwd, up); right /= np.linalg.norm(right)
+        up_v  = np.cross(right, fwd)
+        self._view_R       = np.array([right, up_v, -fwd], dtype=np.float64)
         self._shading_dirty = True
 
         self._proj_dirty   = True
@@ -589,5 +578,6 @@ class ViewerWidget(QWidget):
     def wheelEvent(self, e):
         if self._camera is None:
             return
+        # Simple, stable zoom towards current center
         self._camera.zoom(e.angleDelta().y() / 120.0)
         self._apply_camera()

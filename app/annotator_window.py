@@ -302,6 +302,7 @@ class AnnotatorWindow(QMainWindow):
                  ("Top", "top"), ("↺ Reset", "reset")]
         for i, (label, view) in enumerate(views):
             btn = QPushButton(label)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setFixedWidth(54 if label != "↺ Reset" else 62)
             btn.setStyleSheet(_BTN)
             btn.clicked.connect(lambda _, v=view: self._viewer.set_view(v))
@@ -320,6 +321,7 @@ class AnnotatorWindow(QMainWindow):
         # Wireframe toggle + density control
         self._wire_btn = QPushButton("Wireframe")
         self._wire_btn.setCheckable(True)
+        self._wire_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._wire_btn.setStyleSheet(_BTN_TOGGLE)
         tb.addWidget(self._wire_btn)
 
@@ -362,6 +364,7 @@ class AnnotatorWindow(QMainWindow):
         # Select mode toggle
         self._select_btn = QPushButton("Select")
         self._select_btn.setCheckable(True)
+        self._select_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._select_btn.setFixedWidth(58)
         self._select_btn.setToolTip(
             "Select mode (S)  —  click mesh to select color cluster\n"
@@ -385,6 +388,7 @@ class AnnotatorWindow(QMainWindow):
         self._next_btn = QPushButton("▶")
         for btn in (self._prev_btn, self._next_btn):
             btn.setStyleSheet(_BTN)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setFixedWidth(32)
             btn.setEnabled(False)
 
@@ -400,7 +404,6 @@ class AnnotatorWindow(QMainWindow):
             "QLineEdit:focus { border-color: #5294e2; }"
             "QLineEdit::placeholder { color: #505068; }"
         )
-        self._goto_input.returnPressed.connect(self._go_to_index)
 
         tb.addWidget(self._prev_btn)
         tb.addWidget(self._goto_input)
@@ -475,6 +478,16 @@ class AnnotatorWindow(QMainWindow):
         sc("Ctrl+Shift+Z", self._redo)
         sc("[", self._brush_decrease)
         sc("]", self._brush_increase)
+        sc("Enter", self._on_enter_pressed)
+        sc("Return", self._on_enter_pressed)
+
+    def _on_enter_pressed(self):
+        # If the goto input has focus, let it handle the event (navigation).
+        # Otherwise, if in SELECT mode, perform fill.
+        if self._goto_input.hasFocus():
+            self._go_to_index()
+        elif self._mode == ToolMode.SELECT:
+            self._fill_selection()
 
     def keyPressEvent(self, e):
         key = e.key()
@@ -490,13 +503,6 @@ class AnnotatorWindow(QMainWindow):
             if key in view_map:
                 self._viewer.set_view(view_map[key])
                 return
-
-        # Strip KeypadModifier so numpad digits that aren't view-preset keys
-        # (2, 4, 5, 6, 8, 9) also trigger color selection.
-        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if self._mode == ToolMode.SELECT:
-                self._fill_selection()
-            return  # always consume; _goto_input handles its own Enter via returnPressed
 
         if key == Qt.Key.Key_Escape:
             self._clear_selection()

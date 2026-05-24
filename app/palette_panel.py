@@ -575,6 +575,7 @@ class PalettePanel(QWidget):
         sel_row.addWidget(self._palette_combo, stretch=1)
 
         new_btn = QPushButton("+")
+        new_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         new_btn.setFixedSize(26, 26)
         new_btn.setToolTip("New palette (copies current)")
         new_btn.setStyleSheet(_NEW_BTN)
@@ -582,6 +583,7 @@ class PalettePanel(QWidget):
         sel_row.addWidget(new_btn)
 
         edit_btn = QPushButton("✎")
+        edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         edit_btn.setFixedSize(26, 26)
         edit_btn.setToolTip("Edit current palette")
         edit_btn.setStyleSheet(_SEL_BTN)
@@ -657,6 +659,7 @@ class PalettePanel(QWidget):
 
         # ── Save button ───────────────────────────────────────────────────
         save_btn = QPushButton("  Save")
+        save_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         save_btn.setStyleSheet(
             "QPushButton {"
             "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
